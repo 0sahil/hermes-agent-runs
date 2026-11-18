@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in the plugin isn't working
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please remove anything private from what you paste: prompts, file paths, project
+        names and chat titles can all show up in the pane and in logs.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead? (A run missing from the list, the wrong origin, a log that doesn't update, ...)
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How was the agent started?
+      description: For example "claude -p from a Hermes chat", "claude in iTerm2", "Claude Code in VS Code's terminal", "npm-installed claude on Windows".
+    validations:
+      required: true
+  - type: input
+    id: plugin
+    attributes:
+      label: Plugin version
+      description: "`hermes plugins list` shows it."
+    validations:
+      required: true
+  - type: input
+    id: hermes
+    attributes:
+      label: Hermes version
+      description: "`hermes --version`"
+    validations:
+      required: true
+  - type: input
+    id: claude
+    attributes:
+      label: Claude Code version
+      description: "`claude --version`"
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. macOS 15.2, Ubuntu 24.04, Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Warnings or logs
+      description: The warnings at the bottom of the pane, or lines mentioning agent-runs from ~/.hermes/logs/desktop.log and agent.log. Remove anything private first.
+      render: text

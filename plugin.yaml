@@ -1,0 +1,38 @@
+name: agent-runs
+version: 0.1.0
+manifest_version: 2
+description: "See the coding-agent runs on this computer (Claude Code today) in a Hermes Desktop pane: which are running, where they were started from, and what each one is doing, live and read-only."
+author: Sahil (0sahil)
+license: MIT
+homepage: https://github.com/0sahil/hermes-agent-runs
+tags: [desktop, agents, claude-code, monitoring]
+requires_hermes: ">=0.23.1"
+provides_tools: []
+provides_hooks: []
+config_schema:
+  default_scope:
+    type: str
+    choices: [hermes, all]
+    default: hermes
+    label: Show by default
+    description: "hermes: only runs started by Hermes chats and cron jobs. all: every run on this computer. The pane has a switch for both."
+  show_embedded:
+    type: bool
+    default: false
+    label: Show Hermes' own model calls
+    description: "When Hermes uses your Claude subscription as its model, each answer is a short Claude Code process that saves no session. They are hidden unless this is on."
+  show_thinking:
+    type: bool
+    default: false
+    label: Show thinking
+    description: "Include the agent's thinking blocks in a run's log, when the transcript has them."
+  keep_finished_hours:
+    type: int
+    default: 6
+    label: Keep finished runs (hours)
+    description: "How long a run stays in the list after its process ends. 0 removes it at once."
+  quiet_minutes:
+    type: int
+    default: 10
+    label: Quiet after (minutes)
+    description: "A live run that has written nothing for this long is shown as quiet instead of running."

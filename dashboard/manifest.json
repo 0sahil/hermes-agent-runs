@@ -1,0 +1,8 @@
+{
+  "name": "agent-runs",
+  "label": "Agent Runs",
+  "description": "The coding-agent runs on this computer",
+  "icon": "Activity",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}
