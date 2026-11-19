@@ -94,6 +94,24 @@ def test_plugin_js_registers_pane_chip_and_command():
     assert "area: PALETTE_AREA" in PLUGIN_JS and "label: 'Show agent runs'" in PLUGIN_JS
 
 
+def test_session_list_params_fit_both_gateway_wires():
+    # The session-authority gateway refuses `limit` above 200 (gateway/session_controls.py), which
+    # once left every Hermes chat untitled.
+    calls = re.findall(r"host\.request\('session\.list',\s*(\{[^}]*\})", PLUGIN_JS)
+    assert calls, "the pane looks chat titles up with session.list"
+    for params in calls:
+        limit = re.search(r"limit:\s*(\d+)", params)
+        assert limit and 1 <= int(limit.group(1)) <= 200, params
+    assert any("scope: 'stored'" in p for p in calls) and any("scope" not in p for p in calls)
+
+
+def test_event_log_lays_out_with_inline_styles_only():
+    # The app's Tailwind build does not scan plugins: a class works only if core happens to use it.
+    start, end = PLUGIN_JS.index("function EventLine("), PLUGIN_JS.index("function Detail(")
+    assert "className" not in PLUGIN_JS[start:end]
+    assert "minmax(0, 1fr)" in PLUGIN_JS and "overflowWrap: 'anywhere'" in PLUGIN_JS
+
+
 def test_no_macos_home_paths_in_shipped_files():
     needle = "/" + "Users" + "/"  # spelled out so this file does not match itself
     skip = {".git", "drafts", "__pycache__", ".pytest_cache"}

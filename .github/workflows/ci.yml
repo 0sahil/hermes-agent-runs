@@ -38,7 +38,7 @@ jobs:
       - run: python -m pytest -q -p no:cacheprovider
 
   javascript:
-    name: JavaScript syntax
+    name: JavaScript syntax and tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -52,6 +52,8 @@ jobs:
         run: |
           cp desktop/plugin.js "$RUNNER_TEMP/plugin.mjs"
           node --check "$RUNNER_TEMP/plugin.mjs"
+      - name: Unit-test the pane's chat-title matching
+        run: node --test tests/js/*.test.mjs
 
   validate:
     name: hermes plugins validate (${{ matrix.os }})

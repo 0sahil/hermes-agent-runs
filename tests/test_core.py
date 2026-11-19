@@ -321,6 +321,52 @@ def test_store_records_custom_config_dirs_for_the_next_scan(adapter, home, tmp_p
     assert custom in store.config_dirs("claude")
 
 
+# --- Claude Code's ripgrep helpers --------------------------------------------------------------
+
+RG_ARGS = ["--no-config", "--files", "--null", "--glob", "**/*.py", "--sort=modified", "--no-ignore", "--hidden", "."]
+
+
+def test_ripgrep_helper_of_a_hermes_run_is_not_listed(adapter, home, tmp_path):
+    # The helper inherits the run's environment, so it would read as a second Hermes-chat run.
+    home.session_file(4242, SID_A)
+    run = native_claude(args=["-p", SECRET_PROMPT])
+    helper = ProcInfo(pid=5001, ppid=4242, name="2.1.0", exe="/opt/tools/claude/versions/2.1.0",
+                      cmdline=["rg", *RG_ARGS], create_time=START + 5)
+    source = static_source([run, helper], environ={4242: hermes_env(), 5001: hermes_env()}, cwd={5001: "/Applications"})
+    store = RunStore(tmp_path / "runs.json")
+    runs = backend(source, adapter, tmp_path, store=store).runs_payload("all")["runs"]
+    assert [r["pid"] for r in runs] == [4242]
+    assert list(store.runs) == [f"claude:{SID_A}"]
+
+
+def test_nested_run_through_a_shell_is_listed(adapter, home, tmp_path):
+    outer = native_claude(pid=4242, args=["-p", SECRET_PROMPT])
+    shell = proc(4300, "zsh", ["/bin/zsh", "-c", "claude -p ..."], ppid=4242)
+    inner = native_claude(pid=4301, ppid=4300, args=["-p", "--model", "sonnet"])
+    source = static_source([outer, shell, inner], environ={4242: hermes_env(), 4301: hermes_env()},
+                           cwd={4242: "/nowhere", 4301: "/nowhere"})
+    runs = backend(source, adapter, tmp_path).runs_payload("all")["runs"]
+    assert sorted(r["pid"] for r in runs) == [4242, 4301]
+
+
+def test_remembered_helpers_from_older_versions_are_dropped(adapter, tmp_path):
+    data = tmp_path / "runs.json"
+    real = {"id": f"claude:{SID_A}", "agent": "claude", "pid": 1, "start": START, "session_id": SID_A,
+            "args_summary": "-p --model opus --output-format json", "finished_at": int(START * 1000) + 60_000,
+            "origin": {"kind": "hermes_chat", "label": "Hermes chat"}}
+    helper_id = f"claude:pid:5001:{int(START)}"
+    helper = {"id": helper_id, "agent": "claude", "pid": 5001, "start": START, "session_id": None,
+              "args_summary": "--no-config --files --null --glob --sort --no-ignore --hidden",
+              "finished_at": int(START * 1000) + 60_000, "origin": {"kind": "hermes_chat", "label": "Hermes chat"}}
+    data.write_text(json.dumps({"version": 1, "runs": {real["id"]: real, helper_id: helper},
+                                "aliases": {"claude:pid:9:1": helper_id}}), "utf-8")
+    store = RunStore(data)
+    runs = backend(static_source([]), adapter, tmp_path, store=store).runs_payload("all")["runs"]
+    assert [r["id"] for r in runs] == [real["id"]]
+    saved = json.loads(data.read_text("utf-8"))
+    assert list(saved["runs"]) == [real["id"]] and saved["aliases"] == {}
+
+
 # --- events through the backend ---------------------------------------------------------------
 
 

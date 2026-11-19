@@ -107,12 +107,15 @@ class Adapter(Protocol):
                                  used in remembered runs, e.g. a custom CLAUDE_CONFIG_DIR)
     match_process(proc) -> bool  cheap: name, exe and argv only
     claims_pid(pid) -> bool      the agent itself recorded this pid as one of its runs
-    describe(proc, env, source, parent_is_hermes) -> dict | None
+    describe(proc, env, source, parent_is_hermes, parent=None) -> dict | None
                                  the run (keys below), or None when the process is not a run
+                                 (`parent`: the parent process, or None when it is gone)
     summarize_latest(path) -> str | None, transcript_model(path) -> str | None
     read_events(path, cursor, limit, show_thinking) -> {"events", "cursor", "reset"}
     find_transcript(session_id, config_dir) -> Path | None
     config_dirs() -> list[Path]  for /status
+    forget_remembered(rec) -> bool   optional: a remembered run that was never a real run (an
+                                 earlier version's mistake); dropped once when the memory is loaded
 
     describe() keys: session_id, session_source, transcript (Path|None), config_dir (Path),
     cwd, embedded, args_summary, model, interactive, status_hint ("busy"|"idle"|None),
@@ -271,6 +274,7 @@ class RunStore:
         self.warning: Optional[str] = None
         self._dirty = False
         self._last_save = 0.0
+        self._vetted: set = set()
         self._load()
 
     def _load(self) -> None:
@@ -330,6 +334,19 @@ class RunStore:
             self.aliases = {k: v for k, v in self.aliases.items() if v in self.runs}
             self._dirty = True
 
+    def vet(self, agent: str, forget: Callable[[Mapping[str, Any]], bool]) -> int:
+        """Drop this agent's remembered runs that `forget` rejects, once per loaded memory."""
+        if agent in self._vetted:
+            return 0
+        self._vetted.add(agent)
+        gone = [k for k, r in self.runs.items() if r.get("agent") == agent and forget(r)]
+        for run_id in gone:
+            del self.runs[run_id]
+        if gone:
+            self.aliases = {k: v for k, v in self.aliases.items() if v in self.runs}
+            self._dirty = True
+        return len(gone)
+
     def resolve(self, run_id: str) -> Optional[str]:
         if run_id in self.runs:
             return run_id
@@ -364,6 +381,11 @@ class Backend:
         self.store = store
         self.settings = normalize_settings(settings)
         self.clock = clock
+        for adapter in self.adapters:
+            forget = getattr(adapter, "forget_remembered", None)
+            if callable(forget):
+                with store.lock:
+                    store.vet(adapter.agent, forget)
 
     # -- discovery --
 
@@ -403,8 +425,8 @@ class Backend:
             env = self.source.environ(proc.pid)
         except Exception:  # AccessDenied and friends: fall back to the parent chain
             env = None
-        parent_is_hermes = is_hermes_process(by_pid.get(proc.ppid)) if proc.ppid else False
-        info = adapter.describe(proc, env, self.source, parent_is_hermes)
+        parent = by_pid.get(proc.ppid) if proc.ppid else None
+        info = adapter.describe(proc, env, self.source, is_hermes_process(parent), parent=parent)
         if info is None:
             return None
         origin = detect_origin(env, proc, by_pid)

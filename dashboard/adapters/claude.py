@@ -9,6 +9,7 @@ How Claude Code leaves traces (checked against Claude Code 2.1):
   The folder name is derived from the cwd, but that encoding is Claude's business: the file is found
   by session id across every project folder.
 - The config dir is `~/.claude`, or the process's own `CLAUDE_CONFIG_DIR`.
+- The native binary doubles as ripgrep for Grep and Glob: those copies are skipped (HELPER_ARGV0).
 
 Only `user`, `assistant` and `system` lines become events; every other line type (there are many,
 and new ones appear) is skipped. Nothing here writes anywhere.
@@ -41,6 +42,31 @@ ID_FLAGS = frozenset({"--session-id", "--resume", "-r"})
 SUBCOMMANDS = frozenset({"mcp", "doctor", "update", "upgrade", "install", "config", "setup-token",
                          "migrate-installer", "plugin", "plugins", "auth"})
 _TRUE = {"1", "true", "yes", "on"}
+
+# The native Claude Code binary is also its own ripgrep. For Grep and Glob it starts a copy of
+# itself as a direct child, with argv[0] "rg" and "--no-config" as the first argument, e.g.
+# `rg --no-config --files --null --glob <pattern> --sort=modified --no-ignore --hidden .`. That copy
+# has the claude exe and inherits the run's environment (Hermes variables included), but it is a
+# file search, not a run. Its shell snapshot also defines an `rg` function that starts the binary
+# the same way, so `rg` typed into the Bash tool appears as claude -> shell -> claude-as-rg.
+# "apply-seccomp" is the other name the binary starts itself under (Linux sandbox setup).
+HELPER_ARGV0 = frozenset({"rg", "apply-seccomp"})
+# A leading flag plus one of these is a ripgrep call even when argv[0] is not "rg" (Windows may
+# not keep a custom argv[0]; a helper may have outlived its parent). Claude Code has none of these
+# options at the top level; only subcommands have a `--json`, and subcommands are not runs either.
+RIPGREP_FLAGS = frozenset({"--no-config", "--files", "--glob", "--json", "--null"})
+# Other flags Claude Code's Grep and Glob pass to ripgrep. Trusted only for a direct child of a
+# Claude process, the one place a ripgrep helper is started from.
+RIPGREP_MORE_FLAGS = frozenset({"--hidden", "--no-ignore", "--sort", "--max-columns", "--files-with-matches",
+                                "--count", "--type", "--multiline", "--max-count", "--line-number",
+                                "--ignore-case", "--case-sensitive", "--fixed-strings", "--pcre2"})
+# Flags that make it a Claude Code run, whatever else is on the line.
+RUN_FLAGS = frozenset({"-p", "--print", "--resume", "--continue", "--session-id", "--fork-session", "--model",
+                       "--output-format", "--input-format", "--permission-mode", "--allowedTools",
+                       "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--tools", "--max-turns",
+                       "--system-prompt", "--append-system-prompt", "--mcp-config", "--add-dir", "--agents",
+                       "--agent", "--settings", "--dangerously-skip-permissions", "--no-session-persistence",
+                       "--effort"})
 
 START_TOLERANCE_S = 10.0  # sessions/<pid>.json startedAt vs. the process start: tells a reused pid apart
 PROMPT_CHARS = 2000
@@ -132,6 +158,24 @@ def parse_args(args: List[str]) -> Tuple[List[str], Dict[str, Optional[str]]]:
 def summarize_args(args: List[str]) -> str:
     """`-p --model opus --output-format json --allowedTools`: flags only, safe values only."""
     return " ".join(parse_args(args)[0])
+
+
+def ripgrep_shaped(args: List[str], direct_child: bool = False) -> bool:
+    """These arguments (after the program, or the words of a remembered args_summary) are a
+    ripgrep call, not a run: a leading `--` flag, a ripgrep flag, and no flag a run would have.
+    `direct_child`: the parent is a Claude process, so any of Claude's usual ripgrep flags will do."""
+    if not args or not args[0].startswith("--"):
+        return False
+    flags = {a.partition("=")[0] for a in args if a.startswith("-")}
+    if flags & RUN_FLAGS:
+        return False
+    return bool(flags & RIPGREP_FLAGS or direct_child and flags & RIPGREP_MORE_FLAGS)
+
+
+def is_helper(argv0: str, args: List[str], direct_child: bool = False) -> bool:
+    """A Claude Code binary started as one of its own tools (see HELPER_ARGV0), not as a run.
+    `args`: the arguments after the Claude Code program (after cli.js for an npm install)."""
+    return _plain(_name(argv0)) in HELPER_ARGV0 or ripgrep_shaped(args, direct_child)
 
 
 # --- transcript lines → events -----------------------------------------------------------------
@@ -512,7 +556,28 @@ class ClaudeAdapter:
 
     def match_process(self, proc: Any) -> bool:
         args = self.program_args(proc)
-        return args is not None and not (args and args[0] in SUBCOMMANDS)
+        if args is None or (args and args[0] in SUBCOMMANDS):
+            return False
+        # The cheap argv-only part of the helper rule; describe() adds the parent check.
+        return not is_helper(str((proc.cmdline or [""])[0]), args)
+
+    def _is_claude(self, proc: Any) -> bool:
+        return proc is not None and self.program_args(proc) is not None
+
+    def is_helper_process(self, proc: Any, parent: Any = None) -> bool:
+        """A ripgrep (or other tool) copy of the Claude binary, not a run.
+
+        Not every Claude process under a Claude process is a helper. The Bash tool runs commands
+        through a shell (claude -> zsh -c -> claude -p), which is a real nested run, and Claude's
+        own self-hosted-runner setup starts an interactive claude as a direct child. So the parent
+        only widens the argv rule: a direct child of a Claude process that looks like any of
+        Claude's ripgrep calls is a helper; a process further down, or whose parent is gone
+        (reparented), needs argv[0] "rg" or the core ripgrep flags."""
+        args = self.program_args(proc)
+        if args is None:
+            return False
+        argv0 = str((proc.cmdline or [""])[0])
+        return is_helper(argv0, args, direct_child=self._is_claude(parent))
 
     def _session_record(self, config_dir: Path, proc: Any) -> Optional[Dict[str, Any]]:
         try:
@@ -527,11 +592,13 @@ class ClaudeAdapter:
         return data
 
     def describe(self, proc: Any, env: Optional[Mapping[str, str]], source: Any,
-                 parent_is_hermes: bool = False) -> Optional[Dict[str, Any]]:
+                 parent_is_hermes: bool = False, parent: Any = None) -> Optional[Dict[str, Any]]:
         args = self.program_args(proc)
         env = env or {}
         config_dir = Path(env["CLAUDE_CONFIG_DIR"]).expanduser() if env.get("CLAUDE_CONFIG_DIR") else self.default_dir
         record = self._session_record(config_dir, proc)
+        if record is None and self.is_helper_process(proc, parent):
+            return None  # a helper never writes a sessions file; a process that did is a run
         if args is None:
             if record is None:
                 return None  # a stale pid file, now another program's pid
@@ -641,6 +708,12 @@ class ClaudeAdapter:
         if cursor is None:
             return tail_events(Path(path), limit, show_thinking)
         return forward_events(Path(path), int(cursor), limit, show_thinking)
+
+    def forget_remembered(self, rec: Mapping[str, Any]) -> bool:
+        """A remembered run that should not have been one: a ripgrep helper that earlier builds
+        counted. Only its args_summary is left to tell, and that keeps every flag name."""
+        summary = rec.get("args_summary")
+        return isinstance(summary, str) and ripgrep_shaped(summary.split())
 
     def summarize_latest(self, path: Path) -> Optional[str]:
         return _summary(Path(path))[0]

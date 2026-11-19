@@ -8,6 +8,7 @@ import pytest
 
 from adapters.claude import parse_args, summarize_args
 from conftest import CWD, SECRET_PROMPT, SID_A, SID_B, SID_C, START, native_claude, proc, static_source
+from procs import ProcInfo
 
 # --- process matching --------------------------------------------------------------------------
 
@@ -48,6 +49,114 @@ def test_matches_claude_code(adapter, p):
 ])
 def test_ignores_other_processes(adapter, p):
     assert not adapter.match_process(p)
+
+
+# --- Claude Code's own ripgrep helpers ---------------------------------------------------------
+
+# What Grep and Glob start, as seen on macOS with Claude Code 2.1 (synthetic pattern and paths).
+RG_GLOB = ["--no-config", "--files", "--null", "--glob", "**/*.py", "--sort=modified", "--no-ignore", "--hidden", "."]
+RG_GREP = ["--no-config", "--hidden", "--glob", "!.git", "--glob", "!.svn", "--max-columns", "500", "-l", "--null",
+           "invented_needle", "."]
+WIN_EXE = "C:\\Users\\dev\\.local\\bin\\claude.exe"
+
+
+def rg_helper(args, pid=5001, ppid=4242, argv0="rg"):
+    """The native binary re-run as ripgrep: argv[0] "rg", the claude exe, named after the version."""
+    return ProcInfo(pid=pid, ppid=ppid, name="2.1.0", exe="/opt/tools/claude/versions/2.1.0",
+                    cmdline=[argv0, *args], create_time=START + 5)
+
+
+@pytest.mark.parametrize("p", [
+    rg_helper(RG_GLOB),
+    rg_helper(RG_GREP),
+    # Windows native install, argv[0] not kept: the claude.exe path with ripgrep arguments
+    proc(5003, "claude.exe", [WIN_EXE, *RG_GLOB], ppid=4242, exe=WIN_EXE),
+    proc(5004, "claude.exe", [WIN_EXE, *RG_GREP], ppid=4242, exe=WIN_EXE),
+    # npm install: should cli.js ever be run as ripgrep, the arguments still give it away
+    proc(5005, "node", ["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js", *RG_GLOB], ppid=4242),
+])
+def test_ripgrep_helper_under_a_claude_run_is_not_a_run(adapter, p):
+    parent = native_claude(args=["-p", SECRET_PROMPT])
+    assert not adapter.match_process(p)
+    assert adapter.describe(p, {"HERMES_SESSION_ID": "local-abc"}, static_source([parent, p]), parent=parent) is None
+
+
+@pytest.mark.parametrize("p", [
+    # Windows native install that keeps argv[0] "rg": the exe path alone never matched it
+    proc(5006, "claude.exe", ["rg", *RG_GLOB], ppid=4242, exe=WIN_EXE),
+    # npm install: Claude Code runs the ripgrep it ships, a real rg binary
+    proc(5007, "rg", ["/usr/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/arm64-darwin/rg", *RG_GLOB[1:]],
+         ppid=4242, exe="/usr/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/arm64-darwin/rg"),
+])
+def test_other_ripgrep_forms_never_match(adapter, p):
+    assert not adapter.match_process(p)
+
+
+@pytest.mark.parametrize("p", [
+    rg_helper(RG_GLOB, ppid=1),                      # argv[0] still says rg
+    proc(5003, "claude.exe", [WIN_EXE, *RG_GREP], ppid=1, exe=WIN_EXE),  # the ripgrep flags do
+])
+def test_reparented_helper_is_not_a_run(adapter, p):
+    # Its parent exited, so it now hangs off launchd / init and the parent check cannot help.
+    assert not adapter.match_process(p)
+    assert adapter.describe(p, {}, static_source([p]), parent=None) is None
+
+
+def test_ripgrep_typed_into_the_bash_tool_is_not_a_run(adapter):
+    # The Bash tool's shell defines `rg` as the claude binary started with ARGV0=rg.
+    shell = proc(4300, "zsh", ["/bin/zsh", "-c", "rg needle"], ppid=4242)
+    p = rg_helper(["invented_needle", "src"], ppid=4300)
+    assert not adapter.match_process(p) and adapter.describe(p, {}, static_source([shell, p]), parent=shell) is None
+
+
+def test_parent_widens_the_ripgrep_rule_for_direct_children_only(adapter):
+    # Ripgrep flags Claude Code's Grep uses, but none of the core four, and argv[0] not kept.
+    args = [WIN_EXE, "--hidden", "--max-columns", "500", "-l", "invented_needle", "."]
+    parent = native_claude()
+    child = proc(5003, "claude.exe", args, ppid=4242, exe=WIN_EXE)
+    assert adapter.is_helper_process(child, parent) is True
+    assert adapter.describe(child, {}, static_source([parent, child]), parent=parent) is None
+    orphan = proc(5003, "claude.exe", args, ppid=1, exe=WIN_EXE)
+    assert adapter.is_helper_process(orphan, None) is False
+
+
+def test_nested_run_through_the_bash_tool_is_a_run(adapter):
+    # claude -> shell (the Bash tool) -> claude -p: a real run started by another run.
+    outer = native_claude(pid=4242, args=["-p", SECRET_PROMPT])
+    shell = proc(4300, "zsh", ["/bin/zsh", "-c", "claude -p ..."], ppid=4242)
+    inner = native_claude(pid=4301, ppid=4300, args=["-p", "--model", "sonnet", "--output-format", "json"])
+    assert adapter.match_process(inner)
+    info = adapter.describe(inner, {}, static_source([outer, shell, inner]), parent=shell)
+    assert info is not None and info["args_summary"] == "-p --model sonnet --output-format json"
+
+
+def test_run_started_directly_by_claude_is_a_run(adapter):
+    # Claude Code's self-hosted-runner setup starts an interactive claude as its direct child.
+    parent = native_claude(pid=4242)
+    child = native_claude(pid=4400, ppid=4242, args=["--append-system-prompt", "x", "--tools", "Bash",
+                                                     "--permission-mode", "default"])
+    assert adapter.match_process(child)
+    assert adapter.describe(child, {}, static_source([parent, child]), parent=parent) is not None
+
+
+def test_a_sessions_file_outranks_the_helper_rule(adapter, home):
+    home.session_file(5001, SID_A, started_ms=(START + 5) * 1000)
+    adapter.begin_scan()
+    p = rg_helper(RG_GLOB)
+    assert adapter.claims_pid(5001)
+    assert adapter.describe(p, {}, static_source([p]))["session_id"] == SID_A
+
+
+@pytest.mark.parametrize("summary, forget", [
+    ("--no-config --files --null --glob --sort --no-ignore --hidden", True),
+    ("--no-config --hidden --glob --max-columns -l --null", True),
+    ("--files --glob", True),
+    ("-p --model opus --output-format json --allowedTools", False),
+    ("--model opus --permission-mode acceptEdits", False),
+    ("", False),
+])
+def test_forget_remembered_helpers(adapter, summary, forget):
+    assert adapter.forget_remembered({"agent": "claude", "args_summary": summary}) is forget
 
 
 def test_session_file_claims_a_renamed_binary(adapter, home):

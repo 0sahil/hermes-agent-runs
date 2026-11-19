@@ -110,8 +110,8 @@ For Claude Code:
 - **Writes only** `plugin-data/agent-runs/runs.json` in the active profile's Hermes home: the runs it
   has seen recently (id, folder, origin, start and last activity, log location), so finished runs
   stay listed after a gateway restart. Entries are removed after **Keep finished runs**.
-- **Asks Hermes** for your chat titles (the gateway's session list) to label runs started from a
-  chat.
+- **Asks Hermes** for your chat titles (the gateway's session list and the desktop's list of saved
+  chats) to label runs started from a chat.
 - **No network, no programs, no model calls.** It runs no subprocesses and sends nothing anywhere.
 - **Shows what the agent does.** The log view shows prompts, the agent's messages, commands and
   the start of tool output, as Claude Code saved them. Anyone who can see your Hermes window sees
@@ -126,6 +126,8 @@ For Claude Code:
   them.
 - Subagents a run starts are not shown as separate runs yet; their work appears as the parent's
   tool calls.
+- Only runs the plugin saw while they were running are listed: runs that ended before it was
+  installed (or while the gateway was off) do not appear under **Finished**.
 
 ## FAQ
 

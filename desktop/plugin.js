@@ -2,8 +2,9 @@
 //
 // A pane in the right sidebar lists the runs the backend (dashboard/plugin_api.py) finds, newest
 // activity first, and opens one to follow its log. A status-bar chip counts the live runs and a
-// ⌘K command opens the pane. Hermes chat titles come from the gateway's own `session.list`, so the
-// backend never opens Hermes' database. The plugin only reads: it never stops or talks to a run.
+// ⌘K command opens the pane. Hermes chat titles come from Hermes' own session listings (gateway
+// `session.list` and the desktop's saved-sessions read), so the backend never opens Hermes'
+// database. The plugin only reads: it never stops or talks to a run.
 import { useQuery, useQueryClient, host, PALETTE_AREA, StatusDot, LogView, EmptyState, ErrorState,
   SegmentedControl, Button, Skeleton, Tip } from '@hermes/plugin-sdk';
 import { useEffect, useRef, useState } from 'react';
@@ -15,7 +16,8 @@ const PANE_ID = `${ID}:${PANE}`; // contribution ids are namespaced by the host
 const LIST_MS = 5000;
 const EVENTS_MS = 2000;
 const MAX_EVENTS = 2000;
-const TITLES_MS = 60000;
+const TITLES_MS = 5 * 60000; // renames also arrive as events; this only catches missed ones
+const TITLES_RETRY_MS = 60000; // a run whose chat has no title yet asks again at most this often
 
 const muted = { color: 'var(--ui-text-tertiary)' };
 const faint = { color: 'var(--ui-text-quaternary)' };
@@ -70,6 +72,9 @@ function ago(ts) {
 
 const clock = ts => (typeof ts === 'number'
   ? new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
+// Always five characters (14:05), so the log's left column stays narrow in every locale.
+const shortClock = ts => (typeof ts === 'number'
+  ? new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '');
 
 function runtime(run) {
   if (typeof run.started_at !== 'number') return '';
@@ -77,12 +82,113 @@ function runtime(run) {
   return duration(end - run.started_at);
 }
 
+// --- chat titles >>> (pure: no imports, no host; tests/js/titles.test.mjs loads this block alone)
+
+// The two gateway wires answer `session.list` differently. The classic gateway
+// (tui_gateway/methods_session.py) lists stored chats, rows keyed `id` (+ `_lineage_root_id`), and
+// refuses unknown params. The session-authority gateway (gateway/session_controls.py) takes
+// `limit` 1..200 only, lists LIVE chats unless `scope: 'stored'`, and keys rows `session_id`, `id`
+// (lineage root) and `resolved_id` (current segment). The desktop's saved-sessions read (the SDK's
+// listPersistedSessions) has `id`, `_lineage_root_id` and `_lineage_ids`. A chat is known
+// under any of those ids, so each one maps to the title.
+const OWN_ID_FIELDS = ['id', 'session_id', 'resolved_id'];
+const isId = v => typeof v === 'string' && v.length > 0;
+
+/** The rows of a session listing reply (`{ sessions: [...] }` or a bare array); null if none. */
+function listingRows(reply) {
+  if (Array.isArray(reply)) return reply;
+  if (reply && typeof reply === 'object' && Array.isArray(reply.sessions)) return reply.sessions;
+  return null;
+}
+
+/** A listing row's title with the ids that are the row itself (`own`) and the ids of the earlier
+ *  segments it continues (`linked`); null for a row without a usable title or id. */
+function rowTitle(row) {
+  if (!row || typeof row !== 'object') return null;
+  const raw = [row.title, row.root_title].find(t => typeof t === 'string' && t.trim());
+  if (!raw) return null;
+  const own = [...new Set(OWN_ID_FIELDS.map(f => row[f]).filter(isId))];
+  const linked = [row._lineage_root_id].concat(Array.isArray(row._lineage_ids) ? row._lineage_ids : [])
+    .filter(id => isId(id) && !own.includes(id));
+  return own.length || linked.length ? { title: raw.trim(), own, linked: [...new Set(linked)] } : null;
+}
+
+/**
+ * Merge listing replies into one id → title map, keeping what each source did for the debug line.
+ * `results`: `[{ source, reply }]`, `[{ source, error }]` or `[{ source, skipped }]`. An id that is
+ * a row of its own keeps that row's title over a later row that only names it as an earlier segment.
+ */
+function indexTitles(results) {
+  const titles = {};
+  const own = new Set();
+  const report = [];
+  for (const r of results) {
+    if (r.error !== undefined || r.skipped !== undefined) {
+      report.push({ source: r.source, ok: false, error: String(r.error !== undefined ? r.error : r.skipped) });
+      continue;
+    }
+    const rows = listingRows(r.reply);
+    if (!rows) {
+      report.push({ source: r.source, ok: false, error: 'reply has no session list' });
+      continue;
+    }
+    let titled = 0;
+    for (const row of rows) {
+      const found = rowTitle(row);
+      if (!found) continue;
+      titled += 1;
+      for (const id of found.own) {
+        titles[id] = found.title;
+        own.add(id);
+      }
+      for (const id of found.linked) if (!own.has(id)) titles[id] = found.title;
+    }
+    report.push({ source: r.source, ok: true, rows: rows.length, titled });
+  }
+  return { titles, report };
+}
+
+/** The title for a Hermes chat id: exact, else the one id it uniquely abbreviates (`local-` + 16 hex). */
+function chatTitle(titles, id) {
+  if (typeof id !== 'string' || !id || !titles) return undefined;
+  if (Object.prototype.hasOwnProperty.call(titles, id)) return titles[id];
+  if (id.length < 16) return undefined;
+  const keys = Object.keys(titles).filter(k => k.startsWith(id));
+  return keys.length === 1 ? titles[keys[0]] : undefined;
+}
+
+/** One line saying why no title was found for `id`, from `indexTitles`' report. */
+function titleMissReason(id, report) {
+  const short = typeof id === 'string' && id.length > 20 ? `${id.slice(0, 20)}…` : String(id);
+  const parts = (report || []).map(r => (r.ok
+    ? `${r.source}: ${r.rows} chat${r.rows === 1 ? '' : 's'}, none with this id`
+    : `${r.source}: ${r.error}`));
+  return `No title for chat ${short}: ${parts.length ? parts.join('; ') : 'not looked up yet'}.`;
+}
+
+/** A title change pushed by the gateway, as `[id, title]`, or null. */
+function titleFromEvent(event) {
+  const p = event && event.payload;
+  if (!p || typeof p.title !== 'string' || !p.title.trim()) return null;
+  const id = typeof p.session_id === 'string' ? p.session_id : event.session_id;
+  return typeof id === 'string' && id ? [id, p.title.trim()] : null;
+}
+
+/** The Hermes chat ids whose titles label these runs (each once). */
+function chatIds(runs) {
+  const ids = runs.filter(r => r && r.origin && r.origin.kind === 'hermes_chat').map(r => r.origin.hermes_session_id);
+  return [...new Set(ids.filter(isId))];
+}
+
 function originLabel(origin, titles) {
-  if (origin.kind === 'hermes_chat' && origin.hermes_session_id && titles[origin.hermes_session_id]) {
-    return titles[origin.hermes_session_id];
+  if (origin.kind === 'hermes_chat' && origin.hermes_session_id) {
+    const title = chatTitle(titles, origin.hermes_session_id);
+    if (title) return title;
   }
   return origin.label || 'Other';
 }
+
+// <<< chat titles
 
 function openPane() {
   if (typeof host.revealPane === 'function') host.revealPane(PANE_ID);
@@ -114,39 +220,66 @@ function useRuns(ctx, scope) {
   });
 }
 
-// Hermes chat id → title, from the gateway's session list; kept fresh by its `session.title` events.
+function activeProfile() {
+  try {
+    const p = host.state && host.state.profile && typeof host.state.profile.get === 'function' ? host.state.profile.get() : '';
+    return typeof p === 'string' && p.trim() ? p.trim() : 'default';
+  } catch {
+    return 'default';
+  }
+}
+
+// Every source is asked each time, because which one answers depends on the gateway wire (see the
+// chat titles block): `scope: 'stored'` is refused by the classic gateway as an unknown param, and
+// the plain call lists only open chats on the session-authority gateway. Limits stay within what
+// both accept (200 for session.list; the saved-sessions read caps itself at 500).
+const TITLE_SOURCES = [
+  { source: 'session.list stored', run: () => host.request('session.list', { limit: 200, include_hidden: true, scope: 'stored' }) },
+  { source: 'session.list', run: () => host.request('session.list', { limit: 200, include_hidden: true }) },
+  { source: 'saved sessions', run: () => (typeof host.listPersistedSessions === 'function'
+    ? host.listPersistedSessions(null, { profile: activeProfile(), limit: 500 }) : undefined) },
+];
+
+async function lookUpTitles() {
+  const results = await Promise.all(TITLE_SOURCES.map(async ({ source, run }) => {
+    try {
+      const reply = await run();
+      return reply === undefined ? { source, skipped: 'not offered by this Hermes version' } : { source, reply };
+    } catch (e) {
+      return { source, error: errorText(e) };
+    }
+  }));
+  return indexTitles(results);
+}
+
+const TITLE_EVENTS = ['session.title', 'session.updated'];
+
+// Hermes chat id → title, from Hermes' own listings; kept fresh by the gateway's title events.
+// Returns the map and, for wanted chats with no title, why (shown folded in the list footer).
 function useChatTitles(ctx, wanted) {
   const qc = useQueryClient();
-  const titles = useQuery({
-    queryKey: [ID, 'titles'],
-    queryFn: async () => {
-      const res = await host.request('session.list', { limit: 500, include_hidden: true });
-      const map = {};
-      for (const s of res && Array.isArray(res.sessions) ? res.sessions : []) {
-        if (!s || typeof s.id !== 'string' || typeof s.title !== 'string' || !s.title.trim()) continue;
-        map[s.id] = s.title.trim();
-        const root = s._lineage_root_id || s.lineage_root_id; // a compressed chat keeps its first id
-        if (typeof root === 'string' && root) map[root] = s.title.trim();
-      }
-      return map;
-    },
-    staleTime: TITLES_MS,
-    refetchInterval: TITLES_MS,
-    retry: 1,
-  });
-  useEffect(() => ctx.onEvent('session.title', event => {
-    const p = event && event.payload;
-    if (p && typeof p.session_id === 'string' && typeof p.title === 'string' && p.title.trim()) {
-      qc.setQueryData([ID, 'titles'], old => ({ ...(old || {}), [p.session_id]: p.title.trim() }));
-    }
-  }), []);
-  // A chat we have not seen yet (just started): look its title up now rather than in a minute.
-  const map = titles.data || {};
-  const missing = wanted.some(id => !(id in map));
+  const key = [ID, 'titles'];
+  const query = useQuery({ queryKey: key, queryFn: lookUpTitles, staleTime: TITLES_MS, refetchInterval: TITLES_MS, retry: 0 });
   useEffect(() => {
-    if (missing && !titles.isFetching && Date.now() - titles.dataUpdatedAt > 10000) titles.refetch();
-  }, [missing, titles.isFetching, titles.dataUpdatedAt]);
-  return map;
+    const offs = TITLE_EVENTS.map(type => ctx.onEvent(type, event => {
+      const found = titleFromEvent(event);
+      if (found) {
+        qc.setQueryData(key, old => ({ report: [], ...(old || {}), titles: { ...((old && old.titles) || {}), [found[0]]: found[1] } }));
+      }
+    }));
+    return () => offs.forEach(off => typeof off === 'function' && off());
+  }, []);
+  const titles = (query.data && query.data.titles) || {};
+  const missing = query.data ? wanted.filter(id => !chatTitle(titles, id)) : [];
+  // A chat we have not seen yet (just started, or titled after its first turn): ask again soon
+  // rather than at the next full refresh, but not more often than once a minute.
+  // The pane re-renders with every runs poll; the minute bucket lets this effect re-check then.
+  const minute = Math.floor(Date.now() / TITLES_RETRY_MS);
+  useEffect(() => {
+    if (missing.length && !query.isFetching && Date.now() - query.dataUpdatedAt > TITLES_RETRY_MS) query.refetch();
+  }, [missing.length, query.isFetching, query.dataUpdatedAt, minute]);
+  const misses = missing.map(id => titleMissReason(id, query.data && query.data.report));
+  return { titles, misses };
 }
 
 function useEvents(ctx, runId, enabled) {
@@ -219,8 +352,8 @@ function Row({ run, titles, onOpen }) {
 function RunList({ ctx, scope, setScope, onOpen }) {
   const runs = useRuns(ctx, scope);
   const data = runs.data;
-  const wanted = data ? data.runs.map(r => r.origin.hermes_session_id).filter(Boolean) : [];
-  const titles = useChatTitles(ctx, wanted);
+  const wanted = data ? chatIds(data.runs) : [];
+  const { titles, misses } = useChatTitles(ctx, wanted);
 
   if (runs.isPending) return jsx('div', { className: 'p-3', children: jsx(Skeleton, { className: 'h-24 w-full' }) });
   if (runs.isError) return jsx(Problem, { title: 'Agent Runs is not ready', error: runs.error, onRetry: () => runs.refetch() });
@@ -245,45 +378,67 @@ function RunList({ ctx, scope, setScope, onOpen }) {
       finished.length > 0 && jsx('div', { key: 'finished', className: 'px-2 pb-1 pt-3 text-[0.6875rem] uppercase tracking-wide', style: faint, children: 'Finished' }),
       ...finished.map(run => jsx(Row, { key: run.id, run, titles, onOpen })),
     ] }),
-    (data.warnings.length > 0 || data.hidden_embedded > 0) && jsxs('div', { className: 'space-y-0.5 px-3 py-2 text-[0.6875rem]',
+    (data.warnings.length > 0 || data.hidden_embedded > 0 || misses.length > 0) && jsxs('div', { className: 'space-y-0.5 px-3 py-2 text-[0.6875rem]',
       style: { ...faint, borderTop: '1px solid var(--ui-stroke-secondary)' }, children: [
-        data.hidden_embedded > 0 && jsx('div', { children: `${data.hidden_embedded} Hermes model call${data.hidden_embedded === 1 ? '' : 's'} hidden (Settings → Plugins → Agent Runs).` }),
-        ...data.warnings.slice(0, 5).map((w, i) => jsx('div', { key: i, className: 'truncate', title: w, children: w })),
+        data.hidden_embedded > 0 && jsx('div', { key: 'embedded', children: `${data.hidden_embedded} Hermes model call${data.hidden_embedded === 1 ? '' : 's'} hidden (Settings → Plugins → Agent Runs).` }),
+        ...data.warnings.slice(0, 5).map((w, i) => jsx('div', { key: `w${i}`, className: 'truncate', title: w, children: w })),
+        misses.length > 0 && jsxs('details', { key: 'titles', children: [
+          jsx('summary', { style: { cursor: 'pointer' }, children: `Chat title not found for ${misses.length} run${misses.length === 1 ? '' : 's'}` }),
+          ...misses.map((m, i) => jsx('div', { key: i, style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', paddingTop: '0.125rem' }, children: m })),
+        ] }),
       ] }),
   ] });
 }
 
+// One mono character per kind (every glyph is ASCII so it is one column wide in any mono font); the
+// kind's name is in the line's tooltip.
 const KIND = {
-  prompt: { tag: 'prompt', style: { color: 'var(--ui-accent)' } },
-  text: { tag: 'says', style: { color: 'var(--ui-text-primary)' } },
-  thinking: { tag: 'thinks', style: { color: 'var(--ui-text-quaternary)', fontStyle: 'italic' } },
-  tool: { tag: 'tool', style: { color: 'var(--ui-text-secondary)' } },
-  result: { tag: 'result', style: { color: 'var(--ui-text-quaternary)' } },
-  error: { tag: 'error', className: 'text-destructive' },
-  system: { tag: 'system', style: { color: 'var(--ui-text-tertiary)' } },
+  prompt: { mark: '>', name: 'prompt', style: { color: 'var(--ui-accent)' } },
+  text: { mark: '*', name: 'says', style: { color: 'var(--ui-text-primary)' } },
+  thinking: { mark: '~', name: 'thinks', style: { color: 'var(--ui-text-quaternary)', fontStyle: 'italic' } },
+  tool: { mark: '$', name: 'tool', style: { color: 'var(--ui-text-secondary)' } },
+  result: { mark: '=', name: 'result', style: { color: 'var(--ui-text-quaternary)' } },
+  error: { mark: '!', name: 'error', style: { color: 'var(--color-destructive)' } },
+  system: { mark: '#', name: 'system', style: { color: 'var(--ui-text-tertiary)' } },
 };
+
+// Layout of one log line. LogView is a plain block (whitespace-pre-wrap, break-words); each line
+// is its own two-column grid: a fixed 7ch gutter (kind mark + HH:MM) and a text column that takes
+// every remaining pixel (`minmax(0, 1fr)`, so long words cannot widen it) and breaks long paths
+// and commands anywhere instead of overflowing. Inline styles only: the app's Tailwind build does
+// not scan plugins, so a class works only if core happens to use it too.
+const lineStyle = { display: 'grid', gridTemplateColumns: '7ch minmax(0, 1fr)', columnGap: '0.5ch', alignItems: 'baseline',
+  padding: '0.125rem 0' };
+const gutterStyle = { whiteSpace: 'nowrap', overflow: 'hidden', fontVariantNumeric: 'tabular-nums' };
+const textStyle = { minWidth: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word' };
+const detailStyle = { ...textStyle, gridColumn: '2', color: 'var(--ui-text-quaternary)', fontStyle: 'normal' };
+
+/** What a log line shows: `head` on the first line, optional `body` under it. */
+function eventText(ev) {
+  const title = ev.title || '';
+  const detail = ev.detail || '';
+  // These kinds carry their text in `detail`; their title is only a label.
+  if (ev.kind === 'prompt' || ev.kind === 'result' || ev.kind === 'text' || (ev.kind === 'error' && title === 'Error')) {
+    return { head: detail || title, body: '' };
+  }
+  if (ev.kind === 'tool') return { head: title, body: detail, inline: true };
+  return { head: title || detail, body: title ? detail : '' };
+}
 
 function EventLine({ ev }) {
   const kind = KIND[ev.kind] || KIND.system;
-  let head = ev.title || '';
-  let body = ev.detail || null;
-  if (ev.kind === 'prompt' || ev.kind === 'result' || ev.kind === 'error' && ev.title === 'Error') {
-    head = ev.detail || ev.title || '';
-    body = null;
-  } else if (ev.kind === 'text') {
-    head = ev.detail || ev.title || '';
-    body = null;
-  } else if (ev.kind === 'tool') {
-    head = `${ev.title}${ev.detail ? `  ${ev.detail}` : ''}`;
-    body = null;
-  }
-  return jsxs('div', { className: 'flex gap-2 py-0.5', children: [
-    jsx('span', { className: 'shrink-0 tabular-nums', style: faint, children: clock(ev.ts) }),
-    jsx('span', { className: `w-12 shrink-0 ${kind.className || ''}`, style: kind.style, children: kind.tag }),
-    jsxs('span', { className: `min-w-0 flex-1 ${kind.className || ''}`, style: kind.style, children: [
-      head,
-      body && jsx('span', { style: faint, children: `\n${body}` }),
+  const { head, body, inline } = eventText(ev);
+  return jsxs('div', { style: lineStyle, title: `${kind.name} · ${clock(ev.ts)}`, children: [
+    jsxs('span', { style: { ...gutterStyle, ...faint }, children: [
+      jsx('span', { style: { ...kind.style, fontStyle: 'normal' }, children: kind.mark }),
+      ` ${shortClock(ev.ts)}`,
     ] }),
+    jsxs('div', { style: { ...textStyle, ...kind.style }, children: [
+      head,
+      // A tool's command follows its name on the same line, wrapping under it.
+      inline && body && jsx('span', { style: { color: 'var(--ui-text-tertiary)' }, children: `  ${body}` }),
+    ] }),
+    !inline && body && jsx('div', { style: detailStyle, children: body }),
   ] });
 }
 
@@ -300,14 +455,18 @@ function EventLog({ events }) {
     const el = box.current;
     if (el && follow.current) el.scrollTop = el.scrollHeight;
   }, [events]);
-  return jsx('div', { ref: box, onScroll, className: 'min-h-0 flex-1 overflow-y-auto px-2 py-2', children:
-    jsx(LogView, { className: 'overflow-visible', children: events.map(ev => jsx(EventLine, { key: ev.key, ev })) }) });
+  // LogView supplies the mono font, size and selectable text; its own border and padding would
+  // take another ~22px from a 300px pane, so they are cleared here.
+  return jsx('div', { ref: box, onScroll, style: { flex: '1 1 0%', minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden',
+    padding: '0.5rem 0.625rem' }, children:
+    jsx(LogView, { style: { overflow: 'visible', border: 0, borderRadius: 0, padding: 0 },
+      children: events.map(ev => jsx(EventLine, { key: ev.key, ev })) }) });
 }
 
 function Detail({ ctx, scope, runId, onBack }) {
   const runs = useRuns(ctx, scope);
   const run = runs.data ? runs.data.runs.find(r => r.id === runId) : null;
-  const titles = useChatTitles(ctx, run && run.origin.hermes_session_id ? [run.origin.hermes_session_id] : []);
+  const { titles } = useChatTitles(ctx, run ? chatIds([run]) : []);
   const events = useEvents(ctx, runId, !!(run && run.has_log));
 
   const back = jsx(Button, { variant: 'ghost', size: 'sm', onClick: onBack, children: '← Runs' });

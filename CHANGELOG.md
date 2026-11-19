@@ -24,4 +24,18 @@ First public release, 0.1.0.
 - Works on macOS, Linux and Windows; finds native, npm and Windows installs of Claude Code with no
   setup.
 
+### Fixed
+- The run log is readable in the narrow right sidebar: each line keeps a small kind mark and time
+  on the left and gives all remaining width to the text, which wraps normally and breaks long
+  commands and paths instead of squeezing to a few characters per line.
+- Runs started from a Hermes chat show the chat's title instead of "Hermes chat". The title
+  lookup now works with both Hermes gateway kinds and the desktop's list of saved chats, retries
+  for chats it has not found yet, and says why in a folded line at the bottom of the pane when a
+  title still cannot be found.
+- Claude Code's file searches no longer show up as runs. The native Claude Code binary runs its
+  Grep and Glob searches as short-lived copies of itself (as ripgrep), which were listed as extra
+  runs with the parent's origin, no session and ripgrep flags. They are now skipped, while a
+  `claude` started by another run through its Bash tool still counts. Such entries remembered by
+  earlier builds are dropped from the finished list.
+
 [Unreleased]: https://github.com/0sahil/hermes-agent-runs/commits/main
