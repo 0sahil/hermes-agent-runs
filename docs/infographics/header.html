@@ -1,0 +1,71 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+html, body { width: 1280px; height: 360px; }
+body { padding: 0; position: relative; }
+.glow { position: absolute; left: -180px; top: -300px; width: 700px; height: 700px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(52,211,153,.13), transparent 62%); }
+.left { position: absolute; left: 0; top: 0; bottom: 0; width: 600px; display: flex; flex-direction: column; justify-content: center; }
+.mark { width: 76px; height: 76px; }
+.name { font-size: 60px; font-weight: 700; letter-spacing: -.035em; line-height: 1; margin-top: 0; }
+.for { font-size: 19px; color: var(--muted); font-weight: 500; margin-top: 12px; letter-spacing: -.005em; }
+.for b { color: var(--text); font-weight: 600; }
+.tag { font-size: 20px; line-height: 1.4; margin-top: 18px; color: #c9d4e0; max-width: 500px; letter-spacing: -.01em; }
+.chips { display: flex; gap: 8px; margin-top: 20px; }
+.chips span { font: 12.5px var(--mono); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); color: #b4bfd0; background: rgba(17,23,31,.8); }
+.right { position: absolute; right: 0; top: 44px; width: 520px; }
+.fade { position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(90deg, var(--bg) 0%, rgba(11,15,20,0) 16%), linear-gradient(0deg, var(--bg) 4%, rgba(11,15,20,0) 40%); }
+.pane { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+.pane .hd { display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); font-size: 14px; color: var(--muted); }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; font-size: 12.5px; }
+.seg span { padding: 3px 11px; } .seg .on { background: #1d2733; color: var(--text); }
+.row { padding: 12px 18px; border-bottom: 1px solid #18212c; }
+.row .t { display: flex; gap: 10px; align-items: center; font-size: 16px; font-weight: 600; }
+.row .m { font-size: 13px; color: var(--muted); margin: 3px 0 0 18px; }
+.row.sel { background: rgba(52,211,153,.06); box-shadow: inset 3px 0 0 var(--accent); }
+.log { padding: 10px 18px 12px; font: 13px/1.8 var(--mono); border-bottom: 1px solid #18212c; }
+.log div { display: flex; gap: 12px; white-space: nowrap; overflow: hidden; }
+.log .k { color: var(--accent); width: 50px; flex: none; } .log .k.tool { color: #7dd3fc; } .log .k.res { color: var(--dim); }
+.log .x { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+</style>
+<style id="transparent">
+html, body { background: transparent !important; background-image: none !important; }
+.glow, .fade { display: none !important; }
+.right { -webkit-mask-image: linear-gradient(0deg, transparent 0, #000 46%); mask-image: linear-gradient(0deg, transparent 0, #000 46%); }
+.pane, .page { box-shadow: none !important; }
+html.light { --text: #1f2328; --muted: #59636e; --dim: #8c959f; --card: #ffffff; --card2: #f6f8fa; --line: #d1d9e0; }
+html.light .tag { color: #3d444d !important; }
+html.light .chips span { color: #3d444d; background: #f6f8fa; }
+html.light .row { border-bottom-color: #eaeef2 !important; }
+html.light .log { border-bottom-color: #eaeef2 !important; }
+html.light .seg .on { background: #eaeef2; }
+html.light .log .k.tool { color: #0969da; }
+html.light .lab { color: #3d444d; }
+</style>
+<script>if (location.hash === '#light') document.documentElement.classList.add('light');</script>
+<style>html.light { --accent: #059669; --accent-soft: rgba(5,150,105,.12); }
+html.light .row.sel { background: rgba(5,150,105,.07) !important; } html.light .dot.quiet { background: #d97706; }</style></head><body>
+<div class="glow"></div>
+<div class="right">
+  <div class="pane">
+    <div class="hd"><span>Agent Runs</span><div class="seg"><span class="on">Hermes</span><span>All</span></div></div>
+    <div class="row sel"><div class="t"><span class="dot run"></span>weather-api</div><div class="m">Nightly build chat · 4m · active now</div></div>
+    <div class="log">
+      <div><span class="k tool">tool</span><span class="x">Bash  python3 -m unittest</span></div>
+      <div><span class="k res">result</span><span class="x" style="color:var(--muted)">Ran 3 tests in 0.002s — OK</span></div>
+      <div><span class="k">agent</span><span class="x">All three tests pass. Running the checks next.</span></div>
+      <div><span class="k tool">tool</span><span class="x">Bash  python3 check.py</span></div>
+    </div>
+    <div class="row"><div class="t"><span class="dot quiet"></span>landing-page</div><div class="m">Hermes cron · 12m · quiet 3 min</div></div>
+    <div class="row"><div class="t"><span class="dot run"></span>invoice-parser</div><div class="m">Terminal · 2m · active 5 sec ago</div></div>
+    <div class="row" style="border-bottom:0"><div class="t" style="color:var(--muted)"><span class="dot done"></span>docs-refresh</div><div class="m">Release chat · finished 20 min ago</div></div>
+  </div>
+  <div class="fade"></div>
+</div>
+<div class="left">
+  <div class="name">Agent Runs</div>
+  <div class="for">a plugin for <b>Hermes</b></div>
+  <div class="tag">See every coding-agent run on your computer, and follow each one live.</div>
+  <div class="chips"><span>Claude Code</span><span>read-only</span><span>no setup</span></div>
+</div>
+</body></html>

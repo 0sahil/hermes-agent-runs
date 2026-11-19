@@ -1,10 +1,13 @@
-# Agent Runs for Hermes
+![Agent Runs, a plugin for Hermes: see every coding-agent run on your computer, and follow each one live](docs/images/header-dark.png#gh-dark-mode-only)
+![Agent Runs, a plugin for Hermes: see every coding-agent run on your computer, and follow each one live](docs/images/header-light.png#gh-light-mode-only)
 
 [![Hermes plugin catalog](https://img.shields.io/badge/Hermes_plugin_catalog-listed-7c3aed)](https://hermes-agent.nousresearch.com/marketplace/agent-runs)
 [![CI](https://github.com/0sahil/hermes-agent-runs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0sahil/hermes-agent-runs/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/0sahil/hermes-agent-runs)](https://github.com/0sahil/hermes-agent-runs/releases/latest)
 [![Hermes ≥ 0.23.1](https://img.shields.io/badge/Hermes-%E2%89%A5%200.23.1-blue)](plugin.yaml)
 [![License: MIT](https://img.shields.io/github/license/0sahil/hermes-agent-runs)](LICENSE)
+
+[Install](#install) · [What you see](#what-you-see) · [How it finds runs](#how-it-finds-runs) · [Settings](#settings) · [FAQ](#faq)
 
 A pane in the [Hermes](https://github.com/NousResearch/hermes-agent) desktop app that lists the
 coding-agent runs on your computer and shows what each one is doing, live. It is made for the runs
