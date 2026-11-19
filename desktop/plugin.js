@@ -25,9 +25,12 @@ const MAX_EVENTS = 2000;
 const TITLES_MS = 5 * 60000; // renames also arrive as events; this only catches missed ones
 const TITLES_RETRY_MS = 60000; // a run whose chat has no title yet asks again at most this often
 
+// The app's text scale, brightest first. Content uses the top three; the dimmest (`faint`) is kept
+// for chrome around it (section headings, counts, the footer), never for something to read.
+const strong = { color: 'var(--ui-text-primary)' };
+const secondary = { color: 'var(--ui-text-secondary)' };
 const muted = { color: 'var(--ui-text-tertiary)' };
 const faint = { color: 'var(--ui-text-quaternary)' };
-const strong = { color: 'var(--ui-text-primary)' };
 const hairline = { borderBottom: '1px solid var(--ui-stroke-secondary)' };
 
 const TONE = { running: 'good', waiting: 'warn', quiet: 'muted', finished: 'muted' };
@@ -264,6 +267,43 @@ function toggled(open, id) {
   return next;
 }
 
+/** How many characters a middle cut keeps from the end: enough for "task #2" and its space. */
+const KEEP_END = 8;
+
+/**
+ * `text` in at most `maxChars` characters, cut in the middle: the start, an ellipsis, then the last
+ * few characters. A chat and its branches often share a long start and differ only at the end
+ * ("… task" and "… task #2"), which an end cut hides. Counts code points, so an emoji or other
+ * astral character is never split in half. No limit (or a non-number) returns the text unchanged.
+ */
+function middleTruncate(text, maxChars) {
+  const s = typeof text === 'string' ? text : String(text == null ? '' : text);
+  const max = Math.floor(Number(maxChars));
+  if (!Number.isFinite(max)) return s;
+  const chars = Array.from(s);
+  if (chars.length <= max) return s;
+  if (max <= 0) return '';
+  if (max === 1) return '…';
+  const room = max - 1; // one is the ellipsis
+  const tail = Math.min(KEEP_END, Math.floor(room / 2));
+  return `${chars.slice(0, room - tail).join('').trimEnd()}…${chars.slice(chars.length - tail).join('')}`;
+}
+
+// A run row's second line is "<chat title> · <runtime> · active <when>"; the part after the title
+// must stay readable, so the title gets what is left. The width of a character is an estimate for
+// the row's 12px UI font, a little on the wide side so the cut comes before the CSS clip does.
+const ROW_CHAR_PX = 6.4;
+const ROW_INSET_PX = 44; // list and row padding, the indent under the status dot, a scrollbar
+const MIN_TITLE_CHARS = 12;
+
+/** How many characters of a title fit on a row in a view `width` px wide, beside `tail` (shown
+ *  after a ` · `). Unmeasured (0 or no width): no limit; the row's CSS clip still applies. */
+function titleChars(width, tail) {
+  if (!(typeof width === 'number' && width > 0)) return Infinity;
+  const tailChars = tail ? Array.from(tail).length + 3 : 0;
+  return Math.max(MIN_TITLE_CHARS, Math.floor((width - ROW_INSET_PX) / ROW_CHAR_PX) - tailChars);
+}
+
 // <<< layout
 
 function openPane() {
@@ -338,23 +378,34 @@ function useRouteRun() {
   return runId;
 }
 
-/** Measure the element `ref` points at (the pane or page root, not the window) and say whether it
- *  is narrow. Measured before paint, so a narrow pane never flashes the wide layout first. */
+// The width is kept in steps of this many px: enough for fitting row titles, and a sash drag
+// re-renders the view a few times instead of on every pixel.
+const WIDTH_STEP_PX = 16;
+
+/** Measure the element `ref` points at (the pane or page root, not the window): whether it is
+ *  narrow, and its width (0 until measured). Measured before paint, so a narrow pane never flashes
+ *  the wide layout first. */
 function useCompact() {
   const ref = useRef(null);
   const [compact, setCompact] = useState(false);
+  const [width, setWidth] = useState(0);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
-    // A collapsed or hidden zone measures 0: keep the last answer until it has a width again.
-    const measure = width => { if (width > 0) setCompact(isCompact(width)); };
+    // A collapsed or hidden zone measures 0: keep the last answer until it has a width again. The
+    // breakpoint uses the exact width; only the reported width is stepped.
+    const measure = w => {
+      if (!(w > 0)) return;
+      setCompact(isCompact(w));
+      setWidth(Math.max(WIDTH_STEP_PX, Math.floor(w / WIDTH_STEP_PX) * WIDTH_STEP_PX));
+    };
     measure(el.getBoundingClientRect().width);
     if (typeof ResizeObserver !== 'function') return undefined;
     const observer = new ResizeObserver(entries => entries.forEach(e => measure(e.contentRect.width)));
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
-  return [ref, compact];
+  return [ref, compact, width];
 }
 
 // --- data --------------------------------------------------------------------------------------
@@ -485,31 +536,41 @@ function Problem({ title, error, onRetry }) {
   }) });
 }
 
-function Row({ run, titles, onOpen }) {
+// The row's second line: the origin (chat title) shrinks, the runtime and activity after it do not.
+const originLineStyle = { display: 'flex', minWidth: 0, whiteSpace: 'nowrap', ...secondary };
+const originStyle = { minWidth: 0, flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis' };
+const keepStyle = { flexShrink: 0 };
+
+function Row({ run, titles, width, onOpen }) {
   const [hover, setHover] = useState(false);
   const finished = run.status === 'finished';
-  const bits = [originLabel(run.origin, titles), runtime(run), run.last_activity_at ? `active ${ago(run.last_activity_at)}` : '']
-    .filter(Boolean);
+  const origin = originLabel(run.origin, titles);
+  const tail = [runtime(run), run.last_activity_at ? `active ${ago(run.last_activity_at)}` : ''].filter(Boolean).join(' · ');
   return jsxs('button', {
     type: 'button',
     onClick: () => onOpen(run.id),
     onMouseEnter: () => setHover(true),
     onMouseLeave: () => setHover(false),
     className: 'flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left',
-    style: { minWidth: 0, opacity: finished ? 0.6 : 1, background: hover ? 'var(--ui-row-hover-background)' : 'transparent' },
+    // Finished rows are already marked by the grey dot and the Finished heading; the fade is only a
+    // hint, so their text stays readable.
+    style: { minWidth: 0, opacity: finished ? 0.85 : 1, background: hover ? 'var(--ui-row-hover-background)' : 'transparent' },
     children: [
       jsxs('div', { className: 'flex min-w-0 items-center gap-2', children: [
         jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
         jsx('span', { className: 'min-w-0 truncate text-sm font-medium', style: strong, children: run.folder || run.cwd || `pid ${run.pid}` }),
-        run.embedded && jsx('span', { className: 'shrink-0 text-[0.6875rem]', style: faint, children: 'model call' }),
+        run.embedded && jsx('span', { className: 'shrink-0 text-[0.6875rem]', style: muted, children: 'model call' }),
       ] }),
-      jsx('div', { className: 'truncate pl-3.5 text-xs', style: muted, children: bits.join(' · ') }),
-      run.latest && jsx('div', { className: 'truncate pl-3.5 font-mono text-[0.6875rem]', style: faint, children: run.latest }),
+      jsxs('div', { className: 'pl-3.5 text-xs', style: originLineStyle, children: [
+        jsx('span', { style: originStyle, title: origin, children: middleTruncate(origin, titleChars(width, tail)) }),
+        tail && jsx('span', { style: keepStyle, children: ` · ${tail}` }),
+      ] }),
+      run.latest && jsx('div', { className: 'truncate pl-3.5 font-mono text-[0.6875rem]', style: muted, children: run.latest }),
     ],
   });
 }
 
-function RunList({ ctx, scope, setScope, onOpen }) {
+function RunList({ ctx, scope, setScope, width, onOpen }) {
   const runs = useRuns(ctx, scope);
   const data = runs.data;
   const wanted = data ? chatIds(data.runs) : [];
@@ -535,9 +596,9 @@ function RunList({ ctx, scope, setScope, onOpen }) {
           ? 'Coding agents that a Hermes chat or cron job starts show up here. Switch to All for every run on this computer.'
           : 'Claude Code runs show up here as soon as they start, however they were started.',
       }),
-      ...live.map(run => jsx(Row, { key: run.id, run, titles, onOpen })),
+      ...live.map(run => jsx(Row, { key: run.id, run, titles, width, onOpen })),
       finished.length > 0 && jsx('div', { key: 'finished', className: 'px-2 pb-1 pt-3 text-[0.6875rem] uppercase tracking-wide', style: faint, children: 'Finished' }),
-      ...finished.map(run => jsx(Row, { key: run.id, run, titles, onOpen })),
+      ...finished.map(run => jsx(Row, { key: run.id, run, titles, width, onOpen })),
     ] }),
     (data.warnings.length > 0 || data.hidden_embedded > 0 || misses.length > 0) && jsxs('div', { className: 'space-y-0.5 px-3 py-2 text-[0.6875rem]',
       style: { ...faint, borderTop: '1px solid var(--ui-stroke-secondary)' }, children: [
@@ -556,9 +617,9 @@ function RunList({ ctx, scope, setScope, onOpen }) {
 const KIND = {
   prompt: { mark: '>', name: 'prompt', style: { color: 'var(--ui-accent)' } },
   text: { mark: '*', name: 'says', style: { color: 'var(--ui-text-primary)' } },
-  thinking: { mark: '~', name: 'thinks', style: { color: 'var(--ui-text-quaternary)', fontStyle: 'italic' } },
+  thinking: { mark: '~', name: 'thinks', style: { color: 'var(--ui-text-tertiary)', fontStyle: 'italic' } },
   tool: { mark: '$', name: 'tool', style: { color: 'var(--ui-text-secondary)' } },
-  result: { mark: '=', name: 'result', style: { color: 'var(--ui-text-quaternary)' } },
+  result: { mark: '=', name: 'result', style: { color: 'var(--ui-text-tertiary)' } },
   error: { mark: '!', name: 'error', style: { color: 'var(--color-destructive)' } },
   system: { mark: '#', name: 'system', style: { color: 'var(--ui-text-tertiary)' } },
 };
@@ -572,7 +633,7 @@ const lineStyle = { display: 'grid', gridTemplateColumns: '7ch minmax(0, 1fr)', 
   padding: '0.125rem 0' };
 const gutterStyle = { whiteSpace: 'nowrap', overflow: 'hidden', fontVariantNumeric: 'tabular-nums' };
 const textStyle = { minWidth: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word' };
-const detailStyle = { ...textStyle, gridColumn: '2', color: 'var(--ui-text-quaternary)', fontStyle: 'normal' };
+const detailStyle = { ...textStyle, gridColumn: '2', color: 'var(--ui-text-tertiary)', fontStyle: 'normal' };
 // Compact rows: one line cut with an ellipsis; an open row shows its whole text under that line at
 // the full width of the log (the gutter column is too valuable to indent it under).
 const clipStyle = { minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
@@ -580,7 +641,7 @@ const rowStyle = { cursor: 'pointer', borderRadius: '0.25rem', outlineOffset: '-
 const openTextStyle = { ...textStyle, padding: '0.125rem 0 0.375rem' };
 
 function Gutter({ ev, kind }) {
-  return jsxs('span', { style: { ...gutterStyle, ...faint }, children: [
+  return jsxs('span', { style: { ...gutterStyle, ...muted }, children: [
     jsx('span', { style: { ...kind.style, fontStyle: 'normal' }, children: kind.mark }),
     ` ${shortClock(ev.ts)}`,
   ] });
@@ -632,8 +693,7 @@ function CompactEventLine({ ev, open, onToggle }) {
       ] }),
       open && jsxs('div', { style: { ...openTextStyle, ...kind.style }, children: [
         head,
-        body && jsx('div', { style: { color: inline ? 'var(--ui-text-tertiary)' : 'var(--ui-text-quaternary)', paddingTop: '0.125rem' },
-          children: body }),
+        body && jsx('div', { style: { color: 'var(--ui-text-tertiary)', fontStyle: 'normal', paddingTop: '0.125rem' }, children: body }),
       ] }),
     ],
   });
@@ -697,18 +757,18 @@ function CompactHeader({ run, titles }) {
       jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
       jsx(Tip, { label: run.cwd || '', children: jsx('span', { className: 'text-sm font-medium', style: { ...clipStyle, ...strong },
         children: run.folder || run.cwd || `pid ${run.pid}` }) }),
-      jsx('span', { className: 'text-xs', style: { ...muted, flexShrink: 0, marginLeft: 'auto' }, children: STATUS_LABEL[run.status] || run.status }),
+      jsx('span', { className: 'text-xs', style: { ...secondary, flexShrink: 0, marginLeft: 'auto' }, children: STATUS_LABEL[run.status] || run.status }),
     ] }),
-    jsxs('div', { className: 'text-xs', style: { ...rowFlex, gap: '0.5rem', ...muted }, children: [
-      jsx('span', { style: clipStyle, children: originLabel(run.origin, titles) }),
+    jsxs('div', { className: 'text-xs', style: { ...rowFlex, gap: '0.5rem', ...secondary }, children: [
+      jsx('span', { style: clipStyle, title: originLabel(run.origin, titles), children: originLabel(run.origin, titles) }),
       jsx(OpenChat, { run }),
       jsx('span', { style: { flexShrink: 0, marginLeft: 'auto' }, children: runtime(run) }),
     ] }),
     (extra || run.args_summary) && jsx('button', { type: 'button', 'aria-expanded': more, onClick: () => setMore(m => !m),
-      className: 'text-[0.6875rem]', style: { ...faint, alignSelf: 'flex-start', cursor: 'pointer' },
+      className: 'text-[0.6875rem]', style: { ...muted, alignSelf: 'flex-start', cursor: 'pointer' },
       children: `${more ? '▾' : '▸'} Details` }),
-    more && extra && jsx('div', { className: 'text-[0.6875rem]', style: { ...muted, overflowWrap: 'anywhere' }, children: extra }),
-    more && run.args_summary && jsx('div', { className: 'font-mono text-[0.6875rem]', style: { ...faint, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+    more && extra && jsx('div', { className: 'text-[0.6875rem]', style: { ...secondary, overflowWrap: 'anywhere' }, children: extra }),
+    more && run.args_summary && jsx('div', { className: 'font-mono text-[0.6875rem]', style: { ...muted, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
       children: run.args_summary }),
   ] });
 }
@@ -721,12 +781,12 @@ function wideHeaderLines(run, titles) {
       jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
       jsx(Tip, { label: run.cwd || '', children: jsx('span', { className: 'min-w-0 truncate text-sm font-medium', style: strong, children: run.folder || run.cwd || `pid ${run.pid}` }) }),
     ] }),
-    jsxs('div', { key: 'how', className: 'flex flex-wrap items-center gap-x-2 px-1 text-xs', style: muted, children: [
+    jsxs('div', { key: 'how', className: 'flex flex-wrap items-center gap-x-2 px-1 text-xs', style: secondary, children: [
       jsx('span', { children: originLabel(run.origin, titles) }),
       jsx(OpenChat, { run }),
       jsx('span', { children: facts.join(' · ') }),
     ] }),
-    run.args_summary && jsx('div', { key: 'args', className: 'truncate px-1 font-mono text-[0.6875rem]', style: faint, title: run.args_summary, children: run.args_summary }),
+    run.args_summary && jsx('div', { key: 'args', className: 'truncate px-1 font-mono text-[0.6875rem]', style: muted, title: run.args_summary, children: run.args_summary }),
   ];
 }
 
@@ -793,15 +853,23 @@ function useSettingsRefresh(ctx) {
 }
 
 const rootStyle = { height: '100%', width: '100%', minWidth: 0, overflow: 'hidden' };
+// Each view paints its own surface over the whole of its box, as core's do; otherwise it shows
+// whatever is behind the zone, which under the glass look is two colours where the pane crosses
+// the sidebar rail's edge. The pane wears the Terminal's surface (app/contrib/surfaces.tsx): it
+// sits as a tab beside the Terminal, docks right or at the bottom like it, and core keeps that
+// surface opaque under glass. The large page wears the chat surface, like the chat and core's
+// own pages in the main area. Each var falls back to the app chrome for Hermes builds without it.
+const paneStyle = { ...rootStyle, background: 'var(--ui-terminal-surface-background, var(--ui-bg-chrome))' };
+const pageStyle = { ...rootStyle, background: 'var(--ui-chat-surface-background, var(--ui-bg-chrome))' };
 
 function Pane({ ctx }) {
   const [scope, setScope] = useState(null); // null: the default scope from the plugin settings
   const [open, setOpen] = useState(null);
-  const [ref, compact] = useCompact();
+  const [ref, compact, width] = useCompact();
   useSettingsRefresh(ctx);
-  return jsx('div', { ref, style: rootStyle, children: open
+  return jsx('div', { ref, style: paneStyle, children: open
     ? jsx(Detail, { ctx, scope, runId: open, compact, onBack: () => setOpen(null) })
-    : jsx(RunList, { ctx, scope, setScope, onOpen: setOpen }) });
+    : jsx(RunList, { ctx, scope, setScope, width, onOpen: setOpen }) });
 }
 
 // The large view. It looks runs up in the `all` scope: a link names one run, whichever view of
@@ -810,7 +878,7 @@ function RunPage({ ctx }) {
   const runId = useRouteRun();
   const [ref, compact] = useCompact();
   useSettingsRefresh(ctx);
-  return jsx('div', { ref, style: rootStyle, children: runId
+  return jsx('div', { ref, style: pageStyle, children: runId
     ? jsx(Detail, { ctx, scope: 'all', runId, compact, page: true, onBack: leaveLarge })
     : jsxs('div', { children: [
       jsx(EmptyState, { title: 'No run to show', description: 'Open a run from the Agent Runs pane and choose Open large.' }),

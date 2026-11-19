@@ -166,7 +166,55 @@ def test_width_is_measured_on_the_view_root_not_the_window():
     for component in ("function Pane(", "function RunPage("):
         body = PLUGIN_JS[PLUGIN_JS.index(component):]
         body = body[:body.index("\n}\n")]
-        assert "useCompact()" in body and "ref, style: rootStyle" in body, component
+        assert "useCompact()" in body and re.search(r"ref, style: (?:pane|page)Style\b", body), component
+
+
+# Colour-bearing style keys and the values a theme-safe one may hold: theme variables (with theme
+# variable fallbacks), or a keyword that carries no colour of its own.
+COLOUR_KEYS = r"color|background|backgroundColor|border(?:Top|Right|Bottom|Left)?(?:Color)?|outline(?:Color)?|boxShadow|fill|stroke"
+NO_COLOUR = {"transparent", "inherit", "currentColor", "none", "0"}
+
+
+def test_every_colour_in_plugin_js_is_a_theme_variable():
+    values = []
+    # A value runs to the next comma or brace outside a quoted string (a ternary keeps both arms).
+    for key, expr in re.findall(rf"\b({COLOUR_KEYS})\s*:\s*((?:'[^'\n]*'|[^,'}}\n])+)", PLUGIN_JS):
+        values += [(key, v) for v in re.findall(r"'([^']*)'", expr)] or [(key, expr.strip())]
+    assert len(values) > 20, "the scan found the style values"
+    for key, value in values:
+        if value in NO_COLOUR or key.startswith("border") and re.fullmatch(r"[\d.]+(?:px|rem)?", value):
+            continue
+        # Drop the theme variables (fallbacks nest); what is left must be colourless.
+        rest = value
+        while re.search(r"var\(--[\w-]+(?:,\s*[^()]*)?\)", rest):
+            rest = re.sub(r"var\(--[\w-]+(?:,\s*[^()]*)?\)", "", rest)
+        assert "var(" in value, f"{key}: {value!r} is not a theme variable"
+        assert re.fullmatch(r"[\d.]+px solid |\s*", rest), f"{key}: {value!r} has colour outside a theme variable"
+
+
+def test_pane_and_page_paint_their_own_theme_surface():
+    # Without a background the pane shows what is behind its zone: two colours under the glass look.
+    pane = re.search(r"^const paneStyle = \{ \.\.\.rootStyle, background: '([^']+)' \};$", PLUGIN_JS, re.M)
+    page = re.search(r"^const pageStyle = \{ \.\.\.rootStyle, background: '([^']+)' \};$", PLUGIN_JS, re.M)
+    assert pane and page
+    assert pane.group(1) == "var(--ui-terminal-surface-background, var(--ui-bg-chrome))"
+    assert page.group(1) == "var(--ui-chat-surface-background, var(--ui-bg-chrome))"
+    # The root fills its zone, so a short list leaves no unpainted gap below it.
+    assert "const rootStyle = { height: '100%', width: '100%'" in PLUGIN_JS
+    # Rows paint their hover over the surface, not a surface of their own.
+    assert PLUGIN_JS.count("background: hover ? 'var(--ui-row-hover-background)' : 'transparent'") == 2
+
+
+def test_run_rows_stay_readable():
+    start, end = PLUGIN_JS.index("function Row("), PLUGIN_JS.index("function RunList(")
+    row = PLUGIN_JS[start:end]
+    assert "style: faint" not in row and "...faint" not in row, "row content never uses the dimmest text"
+    assert "opacity: finished ? 0.85 : 1" in row
+    # The chat title is cut in the middle to the measured width, whole in its tooltip, and the
+    # runtime and activity after it never shrink.
+    assert "middleTruncate(origin, titleChars(width, tail))" in row and "title: origin" in row
+    assert re.search(r"const keepStyle = \{ flexShrink: 0 \};", PLUGIN_JS)
+    assert "const originLineStyle = { display: 'flex', minWidth: 0, whiteSpace: 'nowrap', ...secondary };" in PLUGIN_JS
 
 
 def test_no_macos_home_paths_in_shipped_files():

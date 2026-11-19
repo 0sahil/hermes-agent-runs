@@ -30,6 +30,17 @@ First public release, 0.1.0.
 - Works on macOS, Linux and Windows; finds native, npm and Windows installs of Claude Code with no
   setup.
 
+### Changed
+- The pane paints its own background, the same one as the Terminal beside it, so every line has
+  the same background wherever the pane is docked, including under the translucent (glass) look.
+  The full-size run page uses the chat's background. Both follow the light and dark themes.
+- Easier to read: the latest action under each run, the chat and time line, the run details and
+  the quieter log lines (thinking, results, times) are one step brighter, and finished runs are
+  only slightly faded.
+- Long chat titles in the run list are shortened in the middle, keeping the end, so a chat and its
+  branch ("… task" and "… task #2") stay told apart. The full title is in the tooltip, wider panes
+  show more of it, and the runtime and last activity after it always stay visible.
+
 ### Fixed
 - The run log is readable in the narrow right sidebar: each line keeps a small kind mark and time
   on the left and gives all remaining width to the text, which wraps normally and breaks long

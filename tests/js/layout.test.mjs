@@ -1,6 +1,6 @@
 // Layout helpers in desktop/plugin.js, run with `node --test tests/js/*.test.mjs`: the width
-// breakpoint, the large view's route path, event ids for the open rows of the compact log, and the
-// one-line text.
+// breakpoint, the large view's route path, event ids for the open rows of the compact log, the
+// one-line text, and the middle cut that fits chat titles on a run row.
 //
 // Like titles.test.mjs, this loads the marked block on its own: plugin.js imports the Hermes SDK,
 // which only exists inside the app.
@@ -15,9 +15,11 @@ assert.ok(start >= 0 && end > start, 'the layout block markers are in plugin.js'
 const block = source.slice(start, end);
 assert.ok(!/\bimport\b|\bhost\.|\bwindow\b/.test(block), 'the layout block stays free of imports, host and window');
 
-const names = ['COMPACT_BELOW', 'isCompact', 'ROUTE_PATH', 'runPath', 'parseRunHash', 'eventText', 'eventSummary', 'eventId', 'toggled'];
+const names = ['COMPACT_BELOW', 'isCompact', 'ROUTE_PATH', 'runPath', 'parseRunHash', 'eventText', 'eventSummary', 'eventId', 'toggled',
+  'middleTruncate', 'titleChars'];
 const mod = await import(`data:text/javascript;charset=utf-8,${encodeURIComponent(`${block}\nexport { ${names.join(', ')} };`)}`);
-const { COMPACT_BELOW, isCompact, ROUTE_PATH, runPath, parseRunHash, eventText, eventSummary, eventId, toggled } = mod;
+const { COMPACT_BELOW, isCompact, ROUTE_PATH, runPath, parseRunHash, eventText, eventSummary, eventId, toggled,
+  middleTruncate, titleChars } = mod;
 
 test('compact below 420 px, full layout from 420 px', () => {
   assert.equal(COMPACT_BELOW, 420);
@@ -95,4 +97,66 @@ test('the open row text keeps what the wide layout shows', () => {
   assert.deepEqual(eventText(tool), { head: 'Bash', body: 'npm test\n  -- --watch', inline: true });
   assert.deepEqual(eventText({ kind: 'system', title: 'Compacted', detail: 'kept 12 messages' }), { head: 'Compacted', body: 'kept 12 messages' });
   assert.deepEqual(eventText({ kind: 'text', title: 'Says', detail: 'Done.' }), { head: 'Done.', body: '' });
+});
+
+// --- the middle cut for chat titles ------------------------------------------------------------
+
+const codePoints = s => Array.from(s).length;
+const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const branch = 'View output of background claude task #2';
+
+test('a title that fits is returned unchanged', () => {
+  assert.equal(middleTruncate('Fix the build', 40), 'Fix the build');
+  assert.equal(middleTruncate('', 5), '');
+  assert.equal(middleTruncate(branch, Infinity), branch, 'no limit (an unmeasured pane)');
+  assert.equal(middleTruncate(branch, undefined), branch, 'no number, no cut');
+});
+
+test('a title of exactly the limit is not cut; one character more is', () => {
+  assert.equal(middleTruncate('abcdefghij', 10), 'abcdefghij');
+  const cut = middleTruncate('abcdefghijk', 10);
+  assert.equal(codePoints(cut), 10);
+  assert.equal(cut, 'abcde…hijk', 'short limits split the room about evenly');
+});
+
+test('the cut keeps the start and the last eight characters', () => {
+  assert.equal(middleTruncate(branch, 23), 'View output of… task #2');
+  const original = middleTruncate('View output of background claude task', 23);
+  assert.notEqual(original, middleTruncate(branch, 23), 'a chat and its branch stay told apart');
+  assert.ok(original.endsWith('ude task'), original);
+  for (const max of [12, 20, 30, 40]) assert.ok(codePoints(middleTruncate(branch, max)) <= max, `max ${max}`);
+});
+
+test('the cut counts code points and never splits an emoji', () => {
+  const title = '🚀 Deploy 🧪 tests for the 日本語 build now 🎉';
+  for (let max = 1; max < codePoints(title); max += 1) {
+    const cut = middleTruncate(title, max);
+    assert.ok(codePoints(cut) <= max, `max ${max}`);
+    assert.ok(!loneSurrogate.test(cut), `no half emoji at max ${max}: ${JSON.stringify(cut)}`);
+  }
+  assert.equal(middleTruncate('🎉🎉🎉🎉', 4), '🎉🎉🎉🎉', 'four code points fit in four (eight UTF-16 units)');
+  assert.equal(middleTruncate('ab🎉cdefg🚀', 5), 'ab…g🚀');
+  assert.equal(middleTruncate('🚀🧪🎉🧪🚀', 3), '🚀…🚀');
+});
+
+test('very small limits still give a short, valid string', () => {
+  assert.equal(middleTruncate(branch, 0), '');
+  assert.equal(middleTruncate(branch, -3), '');
+  assert.equal(middleTruncate(branch, 1), '…');
+  assert.equal(middleTruncate(branch, 2), 'V…');
+  assert.equal(middleTruncate(branch, 3), 'V…2');
+  assert.equal(middleTruncate(branch, 4.9), 'Vi…2', 'a fractional limit rounds down');
+});
+
+test('a row title gets the width left after its runtime and activity', () => {
+  const tail = '11m · active 16 min ago';
+  assert.equal(titleChars(0, tail), Infinity, 'unmeasured: no limit');
+  assert.equal(titleChars(undefined, tail), Infinity);
+  const narrow = titleChars(300, tail);
+  const wide = titleChars(900, tail);
+  assert.ok(narrow >= 12 && narrow < 30, `narrow ${narrow}`);
+  assert.ok(wide > 80, `a wide pane shows a long title whole (${wide})`);
+  assert.equal(middleTruncate(branch, wide), branch);
+  assert.ok(titleChars(300, '') > narrow, 'a shorter tail leaves more room');
+  assert.equal(titleChars(60, tail), 12, 'never below a dozen characters; past that the CSS clip takes over');
 });
