@@ -217,6 +217,22 @@ def test_run_rows_stay_readable():
     assert "const originLineStyle = { display: 'flex', minWidth: 0, whiteSpace: 'nowrap', ...secondary };" in PLUGIN_JS
 
 
+def test_no_jsx_text_opens_with_a_plain_space_before_a_separator():
+    # Text that starts a flex item loses its leading plain space ("task· 4m"); a separator that
+    # opens its own item uses afterTitle (a no-break space). Comments are dropped before the scan.
+    code = re.sub(r"/\*.*?\*/", "", PLUGIN_JS, flags=re.S)
+    code = re.sub(r"(?m)(^|\s)//.*$", r"\1", code)
+    # Every string and template literal, read in order so one never starts inside another.
+    literals = [m.group(0) for m in re.finditer(r"'(?:[^'\\\n]|\\.)*'|\"(?:[^\"\\\n]|\\.)*\"|`(?:[^`\\]|\\.)*`", code)]
+    assert len(literals) > 100, "the scan found the literals"
+    allowed = {"' · '"}  # the SEP constant, only ever joined between items
+    found = [lit for lit in literals if re.match(r"[ \t]+[·•|–—/-]", lit[1:]) and lit not in allowed]
+    assert not found, f"string opens with a plain space before a separator: {found}"
+    assert re.search(r"^const SEP = ' · ';$", PLUGIN_JS, re.M)
+    assert "join(' · ')" not in PLUGIN_JS, "join with SEP"
+    assert "children: afterTitle(tail)" in PLUGIN_JS
+
+
 def test_no_macos_home_paths_in_shipped_files():
     needle = "/" + "Users" + "/"  # spelled out so this file does not match itself
     skip = {".git", "drafts", "__pycache__", ".pytest_cache"}

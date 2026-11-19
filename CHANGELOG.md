@@ -61,5 +61,7 @@ First public release, 0.1.0.
   scrolls when it is not already at the bottom; a chat title that arrives again is not stored
   again; and the out-of-turn title lookup runs at most once a minute for all views together and
   never cancels one already under way.
+- The chat and time line under each run reads "… task · 4m · active 1 sec ago" again; the space
+  before the first dot was dropped.
 
 [Unreleased]: https://github.com/0sahil/hermes-agent-runs/commits/main

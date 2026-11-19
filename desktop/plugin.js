@@ -345,8 +345,18 @@ const ROW_CHAR_PX = 6.4;
 const ROW_INSET_PX = 44; // list and row padding, the indent under the status dot, a scrollbar
 const MIN_TITLE_CHARS = 12;
 
+// Text that starts a flex item loses a leading plain space to CSS white-space processing, so a
+// separator that opens its own flex item starts with a no-break space instead.
+const NBSP = ' ';
+const SEP = ' · ';
+
+/** The flex item after a row's title: its facts behind the separator, or '' when there are none. */
+function afterTitle(tail) {
+  return tail ? `${NBSP}${SEP.trimStart()}${tail}` : '';
+}
+
 /** How many characters of a title fit on a row in a view `width` px wide, beside `tail` (shown
- *  after a ` · `). Unmeasured (0 or no width): no limit; the row's CSS clip still applies. */
+ *  after the separator). Unmeasured (0 or no width): no limit; the row's CSS clip still applies. */
 function titleChars(width, tail) {
   if (!(typeof width === 'number' && width > 0)) return Infinity;
   const tailChars = tail ? Array.from(tail).length + 3 : 0;
@@ -611,7 +621,7 @@ function Row({ run, titles, width, onOpen }) {
   const [hover, setHover] = useState(false);
   const finished = run.status === 'finished';
   const origin = originLabel(run.origin, titles);
-  const tail = [runtime(run), run.last_activity_at ? `active ${ago(run.last_activity_at)}` : ''].filter(Boolean).join(' · ');
+  const tail = [runtime(run), run.last_activity_at ? `active ${ago(run.last_activity_at)}` : ''].filter(Boolean).join(SEP);
   return jsxs('button', {
     type: 'button',
     onClick: () => onOpen(run.id),
@@ -629,7 +639,7 @@ function Row({ run, titles, width, onOpen }) {
       ] }),
       jsxs('div', { className: 'pl-3.5 text-xs', style: originLineStyle, children: [
         jsx('span', { style: originStyle, title: origin, children: middleTruncate(origin, titleChars(width, tail)) }),
-        tail && jsx('span', { style: keepStyle, children: ` · ${tail}` }),
+        tail && jsx('span', { style: keepStyle, children: afterTitle(tail) }),
       ] }),
       run.latest && jsx('div', { className: 'truncate pl-3.5 font-mono text-[0.6875rem]', style: muted, children: run.latest }),
     ],
@@ -820,7 +830,7 @@ function OpenChat({ run }) {
 // rest (model, agent, arguments) behind a Details toggle.
 function CompactHeader({ run, titles }) {
   const [more, setMore] = useState(false);
-  const extra = [run.model, run.agent_label].filter(Boolean).join(' · ');
+  const extra = [run.model, run.agent_label].filter(Boolean).join(SEP);
   return jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.125rem', padding: '0 0.25rem', minWidth: 0 }, children: [
     jsxs('div', { style: { ...rowFlex, gap: '0.5rem' }, children: [
       jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
@@ -853,7 +863,7 @@ function wideHeaderLines(run, titles) {
     jsxs('div', { key: 'how', className: 'flex flex-wrap items-center gap-x-2 px-1 text-xs', style: secondary, children: [
       jsx('span', { children: originLabel(run.origin, titles) }),
       jsx(OpenChat, { run }),
-      jsx('span', { children: facts.join(' · ') }),
+      jsx('span', { children: facts.join(SEP) }),
     ] }),
     run.args_summary && jsx('div', { key: 'args', className: 'truncate px-1 font-mono text-[0.6875rem]', style: muted, title: run.args_summary, children: run.args_summary }),
   ];

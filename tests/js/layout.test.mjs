@@ -16,10 +16,10 @@ const block = source.slice(start, end);
 assert.ok(!/\bimport\b|\bhost\.|\bwindow\b/.test(block), 'the layout block stays free of imports, host and window');
 
 const names = ['COMPACT_BELOW', 'isCompact', 'ROUTE_PATH', 'runPath', 'parseRunHash', 'eventText', 'eventSummary', 'eventId', 'toggled',
-  'middleTruncate', 'titleChars'];
+  'middleTruncate', 'titleChars', 'afterTitle', 'SEP'];
 const mod = await import(`data:text/javascript;charset=utf-8,${encodeURIComponent(`${block}\nexport { ${names.join(', ')} };`)}`);
 const { COMPACT_BELOW, isCompact, ROUTE_PATH, runPath, parseRunHash, eventText, eventSummary, eventId, toggled,
-  middleTruncate, titleChars } = mod;
+  middleTruncate, titleChars, afterTitle, SEP } = mod;
 
 test('compact below 420 px, full layout from 420 px', () => {
   assert.equal(COMPACT_BELOW, 420);
@@ -159,4 +159,16 @@ test('a row title gets the width left after its runtime and activity', () => {
   assert.equal(middleTruncate(branch, wide), branch);
   assert.ok(titleChars(300, '') > narrow, 'a shorter tail leaves more room');
   assert.equal(titleChars(60, tail), 12, 'never below a dozen characters; past that the CSS clip takes over');
+});
+
+test('the text after a row title keeps its space before the separator', () => {
+  // It is a flex item of its own, where CSS drops a leading plain space ("task· 4m").
+  const tail = ['4m', 'active 1 sec ago'].join(SEP);
+  assert.equal(afterTitle(tail), ' · 4m · active 1 sec ago');
+  assert.ok(!afterTitle(tail).startsWith(' '), 'never a plain leading space');
+  // Rendered as a whitespace-collapsing renderer would, title and tail read with a space each side.
+  const shown = `View output of… task${afterTitle(tail).replace(/^ +/, '')}`.replace(/ /g, ' ');
+  assert.equal(shown, 'View output of… task · 4m · active 1 sec ago');
+  assert.equal(afterTitle(''), '', 'no facts, no separator');
+  assert.equal(Array.from(afterTitle(tail)).length, Array.from(tail).length + 3, 'titleChars budgets 3 for the separator');
 });
