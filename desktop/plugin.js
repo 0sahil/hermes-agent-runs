@@ -183,6 +183,26 @@ function titleFromEvent(event) {
   return typeof id === 'string' && id ? [id, p.title.trim()] : null;
 }
 
+/**
+ * The titles cache with `title` set for `id`, for a pushed title change; undefined when it already
+ * reads that, so the cache write is skipped (every mounted view hears the same event, and a write
+ * that changes nothing would still re-render them all).
+ */
+function withTitle(old, id, title) {
+  const titles = (old && old.titles) || {};
+  if (titles[id] === title) return undefined;
+  return { report: [], ...(old || {}), titles: { ...titles, [id]: title } };
+}
+
+/**
+ * Should a view ask for titles again now? Only when a chat it shows has none, nothing is being
+ * fetched, the last answer is older than `every` ms, and no view asked in the last `every` ms
+ * (`lastTry` is shared by every view, so two views never ask twice).
+ */
+function titleRetryDue({ missing, fetching, updatedAt, lastTry, now, every }) {
+  return missing > 0 && !fetching && now - (updatedAt || 0) > every && now - (lastTry || 0) > every;
+}
+
 /** The Hermes chat ids whose titles label these runs (each once). */
 function chatIds(runs) {
   const ids = runs.filter(r => r && r.origin && r.origin.kind === 'hermes_chat').map(r => r.origin.hermes_session_id);
@@ -206,6 +226,35 @@ const COMPACT_BELOW = 420;
 
 /** Is a measured width narrow? 0 means "not measured" (a hidden or collapsed zone), never compact. */
 const isCompact = width => typeof width === 'number' && width > 0 && width < COMPACT_BELOW;
+
+// The reported width is kept in steps of this many px: enough for fitting row titles, and a sash
+// drag re-renders the view a few times instead of on every pixel.
+const WIDTH_STEP_PX = 16;
+
+/** A view's size before it is measured. */
+const UNMEASURED = Object.freeze({ compact: false, width: 0 });
+
+/**
+ * The view size after measuring `width` px: `prev` itself (so React skips the update) when the
+ * width is unmeasured (0, a hidden or collapsed zone) or lands on the same step and side of the
+ * breakpoint. The breakpoint uses the exact width; only the reported width is stepped.
+ */
+function nextSize(prev, width) {
+  if (!(typeof width === 'number' && width > 0)) return prev;
+  const compact = isCompact(width);
+  const stepped = Math.max(WIDTH_STEP_PX, Math.floor(width / WIDTH_STEP_PX) * WIDTH_STEP_PX);
+  return prev && prev.compact === compact && prev.width === stepped ? prev : { compact, width: stepped };
+}
+
+/** Where a following log should scroll to (its bottom), or null when it is already there. */
+function scrollTarget({ scrollTop, scrollHeight, clientHeight }) {
+  const bottom = Math.max(0, scrollHeight - clientHeight);
+  return Math.abs(scrollTop - bottom) < 1 ? null : bottom;
+}
+
+/** The cache key of one view's copy of a run's log. The pane and the large page each keep their
+ *  own (with their own cursor), so neither one's reads, resets or clean-up touch the other's. */
+const eventsKey = (pluginId, runId, view) => [pluginId, 'events', view === 'page' ? 'page' : 'pane', runId];
 
 // The large view is one contributed page. Contributed routes match one exact path segment and
 // get no params (app/routes.ts in the desktop), so the run id rides in the query string, the
@@ -369,7 +418,7 @@ function useRouteRun() {
     if (typeof window === 'undefined') return undefined;
     const sync = () => {
       const at = parseRunHash(currentHash());
-      if (at.onRoute) setRunId(at.runId);
+      if (at.onRoute) setRunId(prev => (prev === at.runId ? prev : at.runId));
     };
     sync();
     window.addEventListener('hashchange', sync);
@@ -378,34 +427,43 @@ function useRouteRun() {
   return runId;
 }
 
-// The width is kept in steps of this many px: enough for fitting row titles, and a sash drag
-// re-renders the view a few times instead of on every pixel.
-const WIDTH_STEP_PX = 16;
-
 /** Measure the element `ref` points at (the pane or page root, not the window): whether it is
  *  narrow, and its width (0 until measured). Measured before paint, so a narrow pane never flashes
  *  the wide layout first. */
 function useCompact() {
   const ref = useRef(null);
-  const [compact, setCompact] = useState(false);
-  const [width, setWidth] = useState(0);
+  const [size, setSize] = useState(UNMEASURED);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
-    // A collapsed or hidden zone measures 0: keep the last answer until it has a width again. The
-    // breakpoint uses the exact width; only the reported width is stepped.
-    const measure = w => {
-      if (!(w > 0)) return;
-      setCompact(isCompact(w));
-      setWidth(Math.max(WIDTH_STEP_PX, Math.floor(w / WIDTH_STEP_PX) * WIDTH_STEP_PX));
-    };
+    // `nextSize` returns the same object when nothing that renders differently changed, so a
+    // resize within one width step (or to 0, a collapsed zone) costs no render at all.
+    const measure = w => setSize(prev => nextSize(prev, w));
     measure(el.getBoundingClientRect().width);
     if (typeof ResizeObserver !== 'function') return undefined;
-    const observer = new ResizeObserver(entries => entries.forEach(e => measure(e.contentRect.width)));
+    // Resizes are applied on the next frame, at most once per frame, never from inside the
+    // observer's own callback: a render that changed the element's size again would otherwise
+    // feed straight back into the observer within the same frame.
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : cb => setTimeout(cb, 16);
+    const unraf = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout;
+    let frame = 0;
+    let latest = 0;
+    const observer = new ResizeObserver(entries => {
+      if (entries.length) latest = entries[entries.length - 1].contentRect.width;
+      if (!frame) {
+        frame = raf(() => {
+          frame = 0;
+          measure(latest);
+        });
+      }
+    });
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame) unraf(frame);
+    };
   }, []);
-  return [ref, compact, width];
+  return [ref, size.compact, size.width];
 }
 
 // --- data --------------------------------------------------------------------------------------
@@ -458,19 +516,21 @@ async function lookUpTitles() {
 }
 
 const TITLE_EVENTS = ['session.title', 'session.updated'];
+const TITLES_KEY = [ID, 'titles'];
+// When any view last asked for titles out of turn: shared, so the list, the pane's run and the
+// large page together still ask at most once a minute.
+let lastTitleRetry = 0;
 
 // Hermes chat id → title, from Hermes' own listings; kept fresh by the gateway's title events.
 // Returns the map and, for wanted chats with no title, why (shown folded in the list footer).
 function useChatTitles(ctx, wanted) {
   const qc = useQueryClient();
-  const key = [ID, 'titles'];
-  const query = useQuery({ queryKey: key, queryFn: lookUpTitles, staleTime: TITLES_MS, refetchInterval: TITLES_MS, retry: 0 });
+  const query = useQuery({ queryKey: TITLES_KEY, queryFn: lookUpTitles, staleTime: TITLES_MS, refetchInterval: TITLES_MS, retry: 0 });
   useEffect(() => {
     const offs = TITLE_EVENTS.map(type => ctx.onEvent(type, event => {
       const found = titleFromEvent(event);
-      if (found) {
-        qc.setQueryData(key, old => ({ report: [], ...(old || {}), titles: { ...((old && old.titles) || {}), [found[0]]: found[1] } }));
-      }
+      // Each mounted view hears the event: only the first one to see a new title writes it.
+      if (found) qc.setQueryData(TITLES_KEY, old => withTitle(old, found[0], found[1]));
     }));
     return () => offs.forEach(off => typeof off === 'function' && off());
   }, []);
@@ -481,23 +541,29 @@ function useChatTitles(ctx, wanted) {
   // The pane re-renders with every runs poll; the minute bucket lets this effect re-check then.
   const minute = Math.floor(Date.now() / TITLES_RETRY_MS);
   useEffect(() => {
-    if (missing.length && !query.isFetching && Date.now() - query.dataUpdatedAt > TITLES_RETRY_MS) query.refetch();
+    const now = Date.now();
+    if (!titleRetryDue({ missing: missing.length, fetching: query.isFetching, updatedAt: query.dataUpdatedAt,
+      lastTry: lastTitleRetry, now, every: TITLES_RETRY_MS })) return;
+    lastTitleRetry = now;
+    // Never cancel a read already under way: its replies are on their way regardless.
+    query.refetch({ cancelRefetch: false });
   }, [missing.length, query.isFetching, query.dataUpdatedAt, minute]);
   const misses = missing.map(id => titleMissReason(id, query.data && query.data.report));
   return { titles, misses };
 }
 
-function useEvents(ctx, runId, enabled) {
+// `view` is 'pane' or 'page': each keeps its own copy of the log (see eventsKey).
+function useEvents(ctx, runId, enabled, view) {
   const qc = useQueryClient();
-  const key = [ID, 'events', runId];
-  // Drop the log when the view closes, so opening it again starts from the end of the file, unless
-  // the other view (pane or large page) still shows this run. This cleanup runs before the query's
-  // own unsubscribe (it is declared first), so this view is still counted among the observers.
+  const key = eventsKey(ID, runId, view);
+  // Drop the log when the view closes, so opening it again starts from the end of the file. The
+  // observer count only matters if the same view is somehow mounted twice; this cleanup runs
+  // before the query's own unsubscribe (it is declared first), so this view is still counted.
   useEffect(() => () => {
     const q = qc.getQueryCache().find({ queryKey: key, exact: true });
     const watchers = q && typeof q.getObserversCount === 'function' ? q.getObserversCount() : 0;
     if (watchers <= 1) qc.removeQueries({ queryKey: key, exact: true });
-  }, [runId]);
+  }, [runId, view]);
   return useQuery({
     queryKey: key,
     enabled,
@@ -725,7 +791,10 @@ function EventLog({ events, compact }) {
   };
   useEffect(() => {
     const el = box.current;
-    if (el && follow.current) el.scrollTop = el.scrollHeight;
+    if (!el || !follow.current) return;
+    // Write only when the view is not at the bottom already: every write fires a scroll event.
+    const target = scrollTarget(el);
+    if (target !== null) el.scrollTop = target;
   }, [events]);
   // LogView supplies the mono font, size and selectable text; its own border and padding would
   // take another ~22px from a 300px pane, so they are cleared here.
@@ -792,19 +861,19 @@ function wideHeaderLines(run, titles) {
 
 /**
  * One run: header and live log. The pane and the large page both render this; `page` says which
- * (it changes the Back control and drops the Open large button), `compact` comes from the width of
- * whichever one it is in.
+ * (it changes the Back control and drops the Open large button, and keeps a separate copy of the
+ * log), `compact` comes from the width of whichever one it is in.
  */
-function Detail({ ctx, scope, runId, onBack, compact, page }) {
+function Detail({ ctx, scope, runId, onBack, onOpenLarge, compact, page }) {
   const runs = useRuns(ctx, scope);
   const run = runs.data ? runs.data.runs.find(r => r.id === runId) : null;
   const { titles } = useChatTitles(ctx, run ? chatIds([run]) : []);
-  const events = useEvents(ctx, runId, !!(run && run.has_log));
+  const events = useEvents(ctx, runId, !!(run && run.has_log), page ? 'page' : 'pane');
 
   const topBar = jsxs('div', { style: { ...rowFlex, gap: '0.25rem' }, children: [
     jsx(Button, { variant: 'ghost', size: 'sm', onClick: onBack, children: page ? '← Back' : '← Runs' }),
-    !page && run && jsx('span', { style: { marginLeft: 'auto' }, children: jsx(Tip, { label: 'Open large', children: jsxs(Button, {
-      variant: 'ghost', size: 'sm', 'aria-label': 'Open large', onClick: () => openLarge(runId),
+    !page && run && onOpenLarge && jsx('span', { style: { marginLeft: 'auto' }, children: jsx(Tip, { label: 'Open large', children: jsxs(Button, {
+      variant: 'ghost', size: 'sm', 'aria-label': 'Open large', onClick: () => onOpenLarge(runId),
       children: [jsx(Codicon, { name: 'screen-full' }), !compact && jsx('span', { style: { marginLeft: '0.375rem' }, children: 'Open large' })],
     }) }) }),
   ] });
@@ -867,8 +936,14 @@ function Pane({ ctx }) {
   const [open, setOpen] = useState(null);
   const [ref, compact, width] = useCompact();
   useSettingsRefresh(ctx);
+  // Open large moves the run to the page: the pane goes back to its list rather than keep a
+  // second live view of the same run following the same log beside it.
+  const toPage = runId => {
+    setOpen(null);
+    openLarge(runId);
+  };
   return jsx('div', { ref, style: paneStyle, children: open
-    ? jsx(Detail, { ctx, scope, runId: open, compact, onBack: () => setOpen(null) })
+    ? jsx(Detail, { ctx, scope, runId: open, compact, onBack: () => setOpen(null), onOpenLarge: toPage })
     : jsx(RunList, { ctx, scope, setScope, width, onOpen: setOpen }) });
 }
 

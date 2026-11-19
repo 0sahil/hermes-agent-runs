@@ -65,7 +65,7 @@ The header shows the folder and status, then where the run came from and how lon
 the model and the command line are under **Details**.
 
 **Open large** (the button at the top of a run) opens that run full size in the main area, with the
-same live log. **Back** returns to where you were.
+same live log, and the pane goes back to its run list. **Back** returns to where you were.
 
 **The status bar** shows "Agent runs · 2" while runs are live (in the default view); click it to
 open the pane.

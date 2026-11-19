@@ -24,7 +24,7 @@ First public release, 0.1.0.
 - A compact run view for narrow sidebars (under about 420 px): one line per log entry that opens in
   place on click, Enter or Space, and a two-line header with the rest under **Details**.
 - **Open large**: one run full size in the main area, with a Back control that returns to where
-  you were.
+  you were. The pane goes back to its run list while the run is open large.
 - Settings: default view, Hermes' own model calls, thinking, how long to keep finished runs, and
   when a run counts as quiet.
 - Works on macOS, Linux and Windows; finds native, npm and Windows installs of Claude Code with no
@@ -54,5 +54,12 @@ First public release, 0.1.0.
   runs with the parent's origin, no session and ripgrep flags. They are now skipped, while a
   `claude` started by another run through its Bash tool still counts. Such entries remembered by
   earlier builds are dropped from the finished list.
+- Hermes Desktop could crash while opening a run large from the pane. Opening it no longer leaves
+  two live views of the same run sharing one copy of its log: the pane returns to its list, and the
+  page and the pane each keep their own copy. The views also stop waking each other: a resize
+  re-renders only when the layout actually changes, and at most once per frame; the log only
+  scrolls when it is not already at the bottom; a chat title that arrives again is not stored
+  again; and the out-of-turn title lookup runs at most once a minute for all views together and
+  never cancels one already under way.
 
 [Unreleased]: https://github.com/0sahil/hermes-agent-runs/commits/main
