@@ -1,0 +1,85 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>
+.cols { display: grid; grid-template-columns: 1fr 64px 1fr; margin-top: 28px; height: 372px; }
+.panel { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 20px 22px; position: relative; }
+.panel.after { border-color: rgba(52,211,153,.45); box-shadow: 0 0 0 1px rgba(52,211,153,.08), 0 0 40px rgba(52,211,153,.06); }
+.tag { font: 600 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+.after .tag { color: var(--accent); }
+.ptitle { font-size: 17px; font-weight: 600; margin: 8px 0 16px; }
+.term { background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font: 12.5px/1.75 var(--mono); color: var(--muted); }
+.term .p { color: var(--dim); }
+.term .c { color: var(--text); }
+.q { margin-top: 16px; display: flex; flex-direction: column; gap: 9px; }
+.q div { display: flex; gap: 10px; align-items: center; color: var(--muted); font-size: 14px; }
+.q i { font-style: normal; width: 20px; height: 20px; border-radius: 50%; border: 1px dashed #4b5768; color: var(--dim); display: grid; place-items: center; font: 600 11px var(--mono); flex: none; }
+.arrow { display: grid; place-items: center; color: var(--dim); }
+.pane { background: var(--card2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.pane .hd { display: flex; justify-content: space-between; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; font-size: 11px; }
+.seg span { padding: 2px 9px; } .seg .on { background: #1d2733; color: var(--text); }
+.row { padding: 8px 14px; border-bottom: 1px solid #18212c; }
+.row .t { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; }
+.row .m { font-size: 11.5px; color: var(--muted); margin: 2px 0 0 16px; }
+.row .l { font: 11px var(--mono); color: var(--dim); margin: 2px 0 0 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.sel { background: rgba(52,211,153,.06); box-shadow: inset 2px 0 0 var(--accent); }
+.log { padding: 8px 14px; font: 11px/1.7 var(--mono); }
+.log div { display: flex; gap: 10px; white-space: nowrap; overflow: hidden; }
+.log .k { color: var(--accent); width: 40px; flex: none; } .log .k.tool { color: #7dd3fc; } .log .k.res { color: var(--dim); }
+.log .x { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+</style><style id="transparent">
+html, body { background: transparent !important; background-image: none !important; }
+body { padding: 6px 0 !important; }
+html, body { height: auto !important; }
+.foot { position: static !important; margin-top: 30px; }
+.panel.after, .box.hi { box-shadow: none !important; }
+html.light { --text: #1f2328; --muted: #59636e; --dim: #8c959f; --card: #ffffff; --card2: #f6f8fa; --line: #d1d9e0; }
+html.light .code div, html.light .chips span, html.light .cmd div { color: #3d444d !important; }
+html.light .q i { border-color: #afb8c1; }
+html.light .seg .on { background: #eaeef2; }
+html.light .row { border-bottom-color: #eaeef2 !important; }
+html.light .log .k.tool { color: #0969da; }
+html.light .zone { border-color: #c8d1da; }
+html.light .foot .sep { background: #afb8c1; }
+html.light .dot.quiet, html.light .state .dot { background: #d97706; }
+html.light .no, html.light .state { color: #b45309 !important; }
+</style>
+<script>if (location.hash === '#light') document.documentElement.classList.add('light');</script>
+<style>html.light { --accent: #059669; --accent-soft: rgba(5,150,105,.12); } html.light .row.sel { background: rgba(5,150,105,.07) !important; }</style></head><body>
+<div class="eyebrow">Agent Runs for Hermes</div>
+<h1>Background agent runs, no longer a black box</h1>
+<div class="cols">
+  <div class="panel">
+    <div class="tag">Without</div>
+    <div class="ptitle">A chat starts <span class="mono" style="font-size:15px">claude -p</span> in the background</div>
+    <div class="term">
+      <div><span class="p">$</span> <span class="c">claude -p "$(cat prompt.txt)" \</span></div>
+      <div>&nbsp;&nbsp;<span class="c">--output-format json &gt; run.json</span></div>
+      <div class="p">&nbsp;</div>
+      <div class="p">… nothing to see until it ends</div>
+    </div>
+    <div class="q">
+      <div><i>?</i>Is it still running, or stuck?</div>
+      <div><i>?</i>What is it doing right now?</div>
+      <div><i>?</i>Which chat started it?</div>
+      <div><i>?</i>Did it finish, or fail an hour ago?</div>
+    </div>
+  </div>
+  <div class="arrow"><svg width="34" height="20" viewBox="0 0 34 20"><path d="M2 10h28M22 3l8 7-8 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+  <div class="panel after">
+    <div class="tag">With Agent Runs</div>
+    <div class="ptitle">Every run in a pane, with its live log</div>
+    <div class="pane">
+      <div class="hd"><span>Agent Runs</span><div class="seg"><span class="on">Hermes</span><span>All</span></div></div>
+      <div class="row sel"><div class="t"><span class="dot run"></span>weather-api</div><div class="m">Nightly build chat · 4m · active now</div></div>
+      <div class="log">
+        <div><span class="k tool">tool</span><span class="x">Bash  python3 -m unittest</span></div>
+        <div><span class="k res">result</span><span class="x" style="color:var(--muted)">Ran 3 tests in 0.002s — OK</span></div>
+        <div><span class="k">agent</span><span class="x">All three tests pass. Running the checks next.</span></div>
+      </div>
+      <div class="row"><div class="t"><span class="dot quiet"></span>landing-page</div><div class="m">Hermes cron · 12m · quiet 3 min</div></div>
+      <div class="row" style="border-bottom:0"><div class="t" style="color:var(--muted)"><span class="dot done"></span>invoice-parser</div><div class="m">Terminal · finished 8 min ago</div></div>
+    </div>
+  </div>
+</div>
+<div class="foot"><span><b>Finds runs by itself</b></span><span class="sep"></span><span>no hooks, flags or setup</span><span class="sep"></span><span>read-only</span><span class="sep"></span><span>macOS, Linux, Windows</span></div>
+</body></html>

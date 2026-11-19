@@ -18,6 +18,9 @@ a setup step. It only reads: it never sends anything to a run and never stops on
 
 An unofficial community plugin; not made, reviewed or endorsed by the Hermes project or Anthropic.
 
+![Without Agent Runs, a background claude -p run shows nothing until it ends; with it, every run is listed in a pane with its live log](docs/images/before-after-dark.png#gh-dark-mode-only)
+![Without Agent Runs, a background claude -p run shows nothing until it ends; with it, every run is listed in a pane with its live log](docs/images/before-after-light.png#gh-light-mode-only)
+
 ![A run opened large, with the Agent Runs pane listing three live runs beside it](docs/images/open-large.png)
 
 ## Requirements
@@ -116,6 +119,9 @@ Every agent-specific piece sits behind a small adapter
 the rest. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How it finds runs
+
+![Four steps: spot the claude process, match its session file, follow its transcript, and name where it came from](docs/images/how-it-works-dark.png#gh-dark-mode-only)
+![Four steps: spot the claude process, match its session file, follow its transcript, and name where it came from](docs/images/how-it-works-light.png#gh-light-mode-only)
 
 For Claude Code:
 
