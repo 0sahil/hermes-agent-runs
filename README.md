@@ -9,7 +9,7 @@ a setup step. It only reads: it never sends anything to a run and never stops on
 
 An unofficial community plugin; not made, reviewed or endorsed by the Hermes project or Anthropic.
 
-<!-- Screenshot: the Agent Runs pane in the right sidebar, showing a run's live log. -->
+![A run opened large, with the Agent Runs pane listing three live runs beside it](docs/images/open-large.png)
 
 ## Requirements
 
@@ -52,6 +52,8 @@ the right sidebar instead.
 
 The switch at the top chooses between **Hermes** (runs started by Hermes chats and cron jobs, the
 default) and **All** (every run on this computer).
+
+<img src="docs/images/pane.png" alt="The Agent Runs pane in the right sidebar listing three live runs" width="290"> <img src="docs/images/run.png" alt="One run's live log in the pane" width="290">
 
 **A run.** Click a run to follow its log as it happens: the prompt, what the agent says, each tool
 call (the command it runs, the file it reads or edits, the pattern it searches) and the start of

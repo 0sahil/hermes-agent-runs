@@ -6,7 +6,9 @@ All notable changes to Agent Runs for Hermes are documented here. The format is 
 
 ## [Unreleased]
 
-First public release, 0.1.0.
+## [0.1.0] - 2026-11-19
+
+First public release.
 
 ### Added
 - An **Agent Runs** pane in the Hermes Desktop right sidebar listing the Claude Code runs on this
@@ -29,39 +31,10 @@ First public release, 0.1.0.
   when a run counts as quiet.
 - Works on macOS, Linux and Windows; finds native, npm and Windows installs of Claude Code with no
   setup.
+- Claude Code's own helper processes (its Grep and Glob searches, which run as copies of the
+  `claude` binary) are not listed as runs, while a `claude` started by another run's Bash tool is.
+- The pane uses the Terminal's background, so it reads the same wherever it is docked, also under
+  the translucent (glass) look, and follows the light and dark themes.
 
-### Changed
-- The pane paints its own background, the same one as the Terminal beside it, so every line has
-  the same background wherever the pane is docked, including under the translucent (glass) look.
-  The full-size run page uses the chat's background. Both follow the light and dark themes.
-- Easier to read: the latest action under each run, the chat and time line, the run details and
-  the quieter log lines (thinking, results, times) are one step brighter, and finished runs are
-  only slightly faded.
-- Long chat titles in the run list are shortened in the middle, keeping the end, so a chat and its
-  branch ("… task" and "… task #2") stay told apart. The full title is in the tooltip, wider panes
-  show more of it, and the runtime and last activity after it always stay visible.
-
-### Fixed
-- The run log is readable in the narrow right sidebar: each line keeps a small kind mark and time
-  on the left and gives all remaining width to the text, which wraps normally and breaks long
-  commands and paths instead of squeezing to a few characters per line.
-- Runs started from a Hermes chat show the chat's title instead of "Hermes chat". The title
-  lookup now works with both Hermes gateway kinds and the desktop's list of saved chats, retries
-  for chats it has not found yet, and says why in a folded line at the bottom of the pane when a
-  title still cannot be found.
-- Claude Code's file searches no longer show up as runs. The native Claude Code binary runs its
-  Grep and Glob searches as short-lived copies of itself (as ripgrep), which were listed as extra
-  runs with the parent's origin, no session and ripgrep flags. They are now skipped, while a
-  `claude` started by another run through its Bash tool still counts. Such entries remembered by
-  earlier builds are dropped from the finished list.
-- Hermes Desktop could crash while opening a run large from the pane. Opening it no longer leaves
-  two live views of the same run sharing one copy of its log: the pane returns to its list, and the
-  page and the pane each keep their own copy. The views also stop waking each other: a resize
-  re-renders only when the layout actually changes, and at most once per frame; the log only
-  scrolls when it is not already at the bottom; a chat title that arrives again is not stored
-  again; and the out-of-turn title lookup runs at most once a minute for all views together and
-  never cancels one already under way.
-- The chat and time line under each run reads "… task · 4m · active 1 sec ago" again; the space
-  before the first dot was dropped.
-
-[Unreleased]: https://github.com/0sahil/hermes-agent-runs/commits/main
+[Unreleased]: https://github.com/0sahil/hermes-agent-runs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/0sahil/hermes-agent-runs/releases/tag/v0.1.0
