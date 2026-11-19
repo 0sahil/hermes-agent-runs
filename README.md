@@ -18,12 +18,23 @@ An unofficial community plugin; not made, reviewed or endorsed by the Hermes pro
 
 ## Install
 
+Agent Runs is listed in the [Hermes plugin catalog](https://hermes-agent.nousresearch.com/marketplace/agent-runs):
+
+```sh
+hermes plugins install agent-runs --enable
+```
+
+Or in Hermes Desktop: **Capabilities → Plugins**, search for **Agent Runs**, and install.
+
+This installs the commit the catalog reviewed, which can trail this repository's `main`.
+`hermes plugins update agent-runs` moves it to the next reviewed version.
+
+To run the newest code before it reaches the catalog (same plugin, newest `main`, not
+catalog-reviewed), install from this repository instead:
+
 ```sh
 hermes plugins install 0sahil/hermes-agent-runs --enable
 ```
-
-Or in Hermes Desktop: **Capabilities → Plugins → Install**, paste `0sahil/hermes-agent-runs`, check
-the commit it shows, and install.
 
 Then:
 
