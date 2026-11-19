@@ -19,6 +19,12 @@ First public release, 0.1.0.
   **Open chat** goes to the Hermes chat that started a run.
 - Finished runs stay listed for a few hours, also across gateway restarts.
 - A status-bar count of live runs, and the ⌘K command **Show agent runs**.
+- The pane arrives as a tab next to **Terminal** (or in the right sidebar when the terminal is not
+  in the layout), so it has a tab to drag; where you move it stays.
+- A compact run view for narrow sidebars (under about 420 px): one line per log entry that opens in
+  place on click, Enter or Space, and a two-line header with the rest under **Details**.
+- **Open large**: one run full size in the main area, with a Back control that returns to where
+  you were.
 - Settings: default view, Hermes' own model calls, thinking, how long to keep finished runs, and
   when a run counts as quiet.
 - Works on macOS, Linux and Windows; finds native, npm and Windows installs of Claude Code with no

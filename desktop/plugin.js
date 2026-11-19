@@ -1,18 +1,24 @@
 // Agent Runs for Hermes Desktop: the coding-agent runs on this computer, live and read-only.
 //
-// A pane in the right sidebar lists the runs the backend (dashboard/plugin_api.py) finds, newest
-// activity first, and opens one to follow its log. A status-bar chip counts the live runs and a
-// ⌘K command opens the pane. Hermes chat titles come from Hermes' own session listings (gateway
-// `session.list` and the desktop's saved-sessions read), so the backend never opens Hermes'
-// database. The plugin only reads: it never stops or talks to a run.
-import { useQuery, useQueryClient, host, PALETTE_AREA, StatusDot, LogView, EmptyState, ErrorState,
-  SegmentedControl, Button, Skeleton, Tip } from '@hermes/plugin-sdk';
-import { useEffect, useRef, useState } from 'react';
+// A pane (a tab beside the Terminal) lists the runs the backend (dashboard/plugin_api.py) finds, newest
+// activity first, and opens one to follow its log. One run can also open full size as a page in
+// the main area. A status-bar chip counts the live runs and a ⌘K command opens the pane. Hermes
+// chat titles come from Hermes' own session listings (gateway `session.list` and the desktop's
+// saved-sessions read), so the backend never opens Hermes' database. The plugin only reads: it
+// never stops or talks to a run.
+import { useQuery, useQueryClient, host, PALETTE_AREA, ROUTES_AREA, StatusDot, LogView, EmptyState,
+  ErrorState, SegmentedControl, Button, Skeleton, Tip, Codicon } from '@hermes/plugin-sdk';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 
 const ID = 'agent-runs';
 const PANE = 'runs';
 const PANE_ID = `${ID}:${PANE}`; // contribution ids are namespaced by the host
+// A lone side pane gets no tab strip, so nothing to drag it by. Its first adoption stacks it as a
+// tab beside the Terminal (core pane id `terminal`); adoption falls back to the `placement` hint
+// when the terminal is not in the layout. Deliberately not `enforce`d: where the user drags the
+// tab later is where it stays.
+const PANE_DOCK = { pane: 'terminal', pos: 'center' };
 const LIST_MS = 5000;
 const EVENTS_MS = 2000;
 const MAX_EVENTS = 2000;
@@ -190,9 +196,79 @@ function originLabel(origin, titles) {
 
 // <<< chat titles
 
+// --- layout >>> (pure: no imports, no host; tests/js/layout.test.mjs loads this block alone)
+
+/** Below this pane width (px) the run view switches to its compact layout. */
+const COMPACT_BELOW = 420;
+
+/** Is a measured width narrow? 0 means "not measured" (a hidden or collapsed zone), never compact. */
+const isCompact = width => typeof width === 'number' && width > 0 && width < COMPACT_BELOW;
+
+// The large view is one contributed page. Contributed routes match one exact path segment and
+// get no params (app/routes.ts in the desktop), so the run id rides in the query string, the
+// shape the app's own deep links use (`/my-page?item=x`).
+const ROUTE_PATH = '/agent-runs';
+
+/** The app path that opens `runId` as a page. */
+const runPath = runId => `${ROUTE_PATH}?run=${encodeURIComponent(runId)}`;
+
+/** Read a location hash (`#/agent-runs?run=…`): is it the run page, and which run it names. */
+function parseRunHash(hash) {
+  const to = typeof hash === 'string' ? hash.replace(/^#/, '') : '';
+  const cut = to.search(/[?#]/);
+  const path = cut === -1 ? to : to.slice(0, cut);
+  if (path !== ROUTE_PATH) return { onRoute: false, runId: null };
+  const query = cut === -1 || to[cut] !== '?' ? '' : to.slice(cut + 1).split('#')[0];
+  const runId = new URLSearchParams(query).get('run');
+  return { onRoute: true, runId: runId && runId.trim() ? runId : null };
+}
+
+/** What a log line shows: `head` on the first line, optional `body` under it (or after it, `inline`). */
+function eventText(ev) {
+  const title = ev.title || '';
+  const detail = ev.detail || '';
+  // These kinds carry their text in `detail`; their title is only a label.
+  if (ev.kind === 'prompt' || ev.kind === 'result' || ev.kind === 'text' || (ev.kind === 'error' && title === 'Error')) {
+    return { head: detail || title, body: '' };
+  }
+  if (ev.kind === 'tool') return { head: title, body: detail, inline: true };
+  return { head: title || detail, body: title ? detail : '' };
+}
+
+/** The single line a compact log row shows: the head, plus a tool's command, whitespace folded. */
+function eventSummary(ev) {
+  const { head, body, inline } = eventText(ev);
+  return (inline && body ? `${head}  ${body}` : head).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A stable id for one event, for remembering which rows are open. Events have no id of their own,
+ * and the sequence number the pane gives them restarts when the log is read again from the end,
+ * so the id is a hash of what the event is. Two identical events share an id (and open together).
+ */
+function eventId(ev) {
+  const text = `${ev.kind}\u0000${ev.ts}\u0000${ev.title || ''}\u0000${ev.detail || ''}`;
+  let h = 0x811c9dc5; // FNV-1a, 32-bit
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${ev.kind}:${ev.ts}:${h.toString(36)}`;
+}
+
+/** Flip `id` in a set of open ids, returning a new set (React state stays immutable). */
+function toggled(open, id) {
+  const next = new Set(open);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+// <<< layout
+
 function openPane() {
   if (typeof host.revealPane === 'function') host.revealPane(PANE_ID);
-  else host.notify({ kind: 'info', message: 'Agent Runs is in the right sidebar.' });
+  else host.notify({ kind: 'info', message: 'Agent Runs is a tab next to Terminal.' });
 }
 
 function openChat(sessionId) {
@@ -201,6 +277,84 @@ function openChat(sessionId) {
   } else {
     host.navigate(`/${encodeURIComponent(sessionId)}`); // the app's own route for a stored chat
   }
+}
+
+// --- the large view (a page in the main area) ---------------------------------------------------
+
+const currentHash = () => {
+  try {
+    return typeof window !== 'undefined' && window.location ? window.location.hash : '';
+  } catch {
+    return '';
+  }
+};
+
+const focusedChat = () => {
+  try {
+    const atom = host.state && host.state.focusedStoredSessionId;
+    const id = atom && typeof atom.get === 'function' ? atom.get() : null;
+    return isId(id) ? id : null;
+  } catch {
+    return null;
+  }
+};
+
+// Where the user was when they opened the large view: Back returns there through the history
+// when the page was entered from inside the app, else to the chat they had open.
+const cameFrom = { history: false, chat: null };
+
+function openLarge(runId) {
+  const path = runPath(runId);
+  if (currentHash() !== `#${path}`) {
+    cameFrom.history = true;
+    cameFrom.chat = focusedChat();
+  }
+  host.navigate(path);
+}
+
+function leaveLarge() {
+  const viaHistory = cameFrom.history && typeof window !== 'undefined' && window.history && window.history.length > 1;
+  const chat = cameFrom.chat || focusedChat();
+  cameFrom.history = false;
+  if (viaHistory) window.history.back();
+  else if (chat) openChat(chat);
+  else host.navigate('/'); // the new-chat route
+}
+
+/** The run the page shows, following the hash. Hash changes away from the page are ignored, so
+ *  the page does not flash "no run" while the router unmounts it. */
+function useRouteRun() {
+  const [runId, setRunId] = useState(() => parseRunHash(currentHash()).runId);
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const sync = () => {
+      const at = parseRunHash(currentHash());
+      if (at.onRoute) setRunId(at.runId);
+    };
+    sync();
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+  return runId;
+}
+
+/** Measure the element `ref` points at (the pane or page root, not the window) and say whether it
+ *  is narrow. Measured before paint, so a narrow pane never flashes the wide layout first. */
+function useCompact() {
+  const ref = useRef(null);
+  const [compact, setCompact] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    // A collapsed or hidden zone measures 0: keep the last answer until it has a width again.
+    const measure = width => { if (width > 0) setCompact(isCompact(width)); };
+    measure(el.getBoundingClientRect().width);
+    if (typeof ResizeObserver !== 'function') return undefined;
+    const observer = new ResizeObserver(entries => entries.forEach(e => measure(e.contentRect.width)));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, compact];
 }
 
 // --- data --------------------------------------------------------------------------------------
@@ -285,8 +439,14 @@ function useChatTitles(ctx, wanted) {
 function useEvents(ctx, runId, enabled) {
   const qc = useQueryClient();
   const key = [ID, 'events', runId];
-  // Drop the log when the view closes, so opening it again starts from the end of the file.
-  useEffect(() => () => qc.removeQueries({ queryKey: key }), [runId]);
+  // Drop the log when the view closes, so opening it again starts from the end of the file, unless
+  // the other view (pane or large page) still shows this run. This cleanup runs before the query's
+  // own unsubscribe (it is declared first), so this view is still counted among the observers.
+  useEffect(() => () => {
+    const q = qc.getQueryCache().find({ queryKey: key, exact: true });
+    const watchers = q && typeof q.getObserversCount === 'function' ? q.getObserversCount() : 0;
+    if (watchers <= 1) qc.removeQueries({ queryKey: key, exact: true });
+  }, [runId]);
   return useQuery({
     queryKey: key,
     enabled,
@@ -336,7 +496,7 @@ function Row({ run, titles, onOpen }) {
     onMouseEnter: () => setHover(true),
     onMouseLeave: () => setHover(false),
     className: 'flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left',
-    style: { opacity: finished ? 0.6 : 1, background: hover ? 'var(--ui-row-hover-background)' : 'transparent' },
+    style: { minWidth: 0, opacity: finished ? 0.6 : 1, background: hover ? 'var(--ui-row-hover-background)' : 'transparent' },
     children: [
       jsxs('div', { className: 'flex min-w-0 items-center gap-2', children: [
         jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
@@ -367,7 +527,8 @@ function RunList({ ctx, scope, setScope, onOpen }) {
         options: [{ id: 'hermes', label: 'Hermes' }, { id: 'all', label: 'All' }] }),
       jsx('span', { className: 'ml-auto text-xs', style: faint, children: live.length ? `${live.length} live` : '' }),
     ] }),
-    jsxs('div', { className: 'min-h-0 flex-1 overflow-y-auto px-1 py-1', children: [
+    // overflowX: a long folder or command never pushes the narrow sidebar sideways.
+    jsxs('div', { className: 'min-h-0 flex-1 overflow-y-auto px-1 py-1', style: { overflowX: 'hidden' }, children: [
       data.runs.length === 0 && jsx(EmptyState, {
         title: current === 'hermes' ? 'No agent runs started by Hermes right now' : 'No agent runs on this computer right now',
         description: current === 'hermes'
@@ -412,27 +573,24 @@ const lineStyle = { display: 'grid', gridTemplateColumns: '7ch minmax(0, 1fr)', 
 const gutterStyle = { whiteSpace: 'nowrap', overflow: 'hidden', fontVariantNumeric: 'tabular-nums' };
 const textStyle = { minWidth: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word' };
 const detailStyle = { ...textStyle, gridColumn: '2', color: 'var(--ui-text-quaternary)', fontStyle: 'normal' };
+// Compact rows: one line cut with an ellipsis; an open row shows its whole text under that line at
+// the full width of the log (the gutter column is too valuable to indent it under).
+const clipStyle = { minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const rowStyle = { cursor: 'pointer', borderRadius: '0.25rem', outlineOffset: '-1px' };
+const openTextStyle = { ...textStyle, padding: '0.125rem 0 0.375rem' };
 
-/** What a log line shows: `head` on the first line, optional `body` under it. */
-function eventText(ev) {
-  const title = ev.title || '';
-  const detail = ev.detail || '';
-  // These kinds carry their text in `detail`; their title is only a label.
-  if (ev.kind === 'prompt' || ev.kind === 'result' || ev.kind === 'text' || (ev.kind === 'error' && title === 'Error')) {
-    return { head: detail || title, body: '' };
-  }
-  if (ev.kind === 'tool') return { head: title, body: detail, inline: true };
-  return { head: title || detail, body: title ? detail : '' };
+function Gutter({ ev, kind }) {
+  return jsxs('span', { style: { ...gutterStyle, ...faint }, children: [
+    jsx('span', { style: { ...kind.style, fontStyle: 'normal' }, children: kind.mark }),
+    ` ${shortClock(ev.ts)}`,
+  ] });
 }
 
 function EventLine({ ev }) {
   const kind = KIND[ev.kind] || KIND.system;
   const { head, body, inline } = eventText(ev);
   return jsxs('div', { style: lineStyle, title: `${kind.name} · ${clock(ev.ts)}`, children: [
-    jsxs('span', { style: { ...gutterStyle, ...faint }, children: [
-      jsx('span', { style: { ...kind.style, fontStyle: 'normal' }, children: kind.mark }),
-      ` ${shortClock(ev.ts)}`,
-    ] }),
+    jsx(Gutter, { ev, kind }),
     jsxs('div', { style: { ...textStyle, ...kind.style }, children: [
       head,
       // A tool's command follows its name on the same line, wrapping under it.
@@ -442,9 +600,63 @@ function EventLine({ ev }) {
   ] });
 }
 
-function EventLog({ events }) {
+function CompactEventLine({ ev, open, onToggle }) {
+  const [hover, setHover] = useState(false);
+  const kind = KIND[ev.kind] || KIND.system;
+  const { head, body, inline } = eventText(ev);
+  const toggle = e => {
+    // A click that ends a text selection in this row is the user copying, not asking to open it.
+    const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
+    if (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode)) return;
+    onToggle();
+  };
+  return jsxs('div', {
+    role: 'button',
+    tabIndex: 0,
+    'aria-expanded': open,
+    title: `${kind.name} · ${clock(ev.ts)}`,
+    onClick: toggle,
+    onKeyDown: e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault(); // Space would also scroll the log
+        onToggle();
+      }
+    },
+    onMouseEnter: () => setHover(true),
+    onMouseLeave: () => setHover(false),
+    style: { ...rowStyle, background: hover ? 'var(--ui-row-hover-background)' : 'transparent' },
+    children: [
+      jsxs('div', { style: lineStyle, children: [
+        jsx(Gutter, { ev, kind }),
+        jsx('span', { style: { ...clipStyle, ...kind.style }, children: eventSummary(ev) }),
+      ] }),
+      open && jsxs('div', { style: { ...openTextStyle, ...kind.style }, children: [
+        head,
+        body && jsx('div', { style: { color: inline ? 'var(--ui-text-tertiary)' : 'var(--ui-text-quaternary)', paddingTop: '0.125rem' },
+          children: body }),
+      ] }),
+    ],
+  });
+}
+
+// Event ids are hashes of the event; the events themselves are kept across polls (the log only
+// appends), so each one is hashed once.
+const idCache = new WeakMap();
+const idOf = ev => {
+  let id = idCache.get(ev);
+  if (id === undefined) {
+    id = eventId(ev);
+    idCache.set(ev, id);
+  }
+  return id;
+};
+
+function EventLog({ events, compact }) {
   const box = useRef(null);
   const follow = useRef(true);
+  // Which compact rows are open, by event id. It lives here, above the rows, so new events from
+  // a poll leave it alone; switching to the wide layout and back keeps it too.
+  const [open, setOpen] = useState(() => new Set());
   // Follow new events while the view is at the bottom; stop when the user scrolls up, and resume
   // once they scroll back down.
   const onScroll = () => {
@@ -460,26 +672,98 @@ function EventLog({ events }) {
   return jsx('div', { ref: box, onScroll, style: { flex: '1 1 0%', minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden',
     padding: '0.5rem 0.625rem' }, children:
     jsx(LogView, { style: { overflow: 'visible', border: 0, borderRadius: 0, padding: 0 },
-      children: events.map(ev => jsx(EventLine, { key: ev.key, ev })) }) });
+      children: events.map(ev => {
+        if (!compact) return jsx(EventLine, { key: ev.key, ev });
+        const id = idOf(ev);
+        return jsx(CompactEventLine, { key: ev.key, ev, open: open.has(id), onToggle: () => setOpen(s => toggled(s, id)) });
+      }) }) });
 }
 
-function Detail({ ctx, scope, runId, onBack }) {
+const rowFlex = { display: 'flex', alignItems: 'center', minWidth: 0 };
+const linkStyle = { color: 'var(--ui-accent)', textDecoration: 'underline', flexShrink: 0 };
+
+function OpenChat({ run }) {
+  if (run.origin.kind !== 'hermes_chat' || !run.origin.hermes_session_id) return null;
+  return jsx('button', { type: 'button', style: linkStyle, onClick: () => openChat(run.origin.hermes_session_id), children: 'Open chat' });
+}
+
+// The header of a run in the compact layout: what it is and how it is doing on two lines, the
+// rest (model, agent, arguments) behind a Details toggle.
+function CompactHeader({ run, titles }) {
+  const [more, setMore] = useState(false);
+  const extra = [run.model, run.agent_label].filter(Boolean).join(' · ');
+  return jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: '0.125rem', padding: '0 0.25rem', minWidth: 0 }, children: [
+    jsxs('div', { style: { ...rowFlex, gap: '0.5rem' }, children: [
+      jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
+      jsx(Tip, { label: run.cwd || '', children: jsx('span', { className: 'text-sm font-medium', style: { ...clipStyle, ...strong },
+        children: run.folder || run.cwd || `pid ${run.pid}` }) }),
+      jsx('span', { className: 'text-xs', style: { ...muted, flexShrink: 0, marginLeft: 'auto' }, children: STATUS_LABEL[run.status] || run.status }),
+    ] }),
+    jsxs('div', { className: 'text-xs', style: { ...rowFlex, gap: '0.5rem', ...muted }, children: [
+      jsx('span', { style: clipStyle, children: originLabel(run.origin, titles) }),
+      jsx(OpenChat, { run }),
+      jsx('span', { style: { flexShrink: 0, marginLeft: 'auto' }, children: runtime(run) }),
+    ] }),
+    (extra || run.args_summary) && jsx('button', { type: 'button', 'aria-expanded': more, onClick: () => setMore(m => !m),
+      className: 'text-[0.6875rem]', style: { ...faint, alignSelf: 'flex-start', cursor: 'pointer' },
+      children: `${more ? '▾' : '▸'} Details` }),
+    more && extra && jsx('div', { className: 'text-[0.6875rem]', style: { ...muted, overflowWrap: 'anywhere' }, children: extra }),
+    more && run.args_summary && jsx('div', { className: 'font-mono text-[0.6875rem]', style: { ...faint, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+      children: run.args_summary }),
+  ] });
+}
+
+/** The header lines of a run in the full layout. */
+function wideHeaderLines(run, titles) {
+  const facts = [STATUS_LABEL[run.status] || run.status, runtime(run), run.model, run.agent_label].filter(Boolean);
+  return [
+    jsxs('div', { key: 'what', className: 'flex min-w-0 items-center gap-2 px-1', children: [
+      jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
+      jsx(Tip, { label: run.cwd || '', children: jsx('span', { className: 'min-w-0 truncate text-sm font-medium', style: strong, children: run.folder || run.cwd || `pid ${run.pid}` }) }),
+    ] }),
+    jsxs('div', { key: 'how', className: 'flex flex-wrap items-center gap-x-2 px-1 text-xs', style: muted, children: [
+      jsx('span', { children: originLabel(run.origin, titles) }),
+      jsx(OpenChat, { run }),
+      jsx('span', { children: facts.join(' · ') }),
+    ] }),
+    run.args_summary && jsx('div', { key: 'args', className: 'truncate px-1 font-mono text-[0.6875rem]', style: faint, title: run.args_summary, children: run.args_summary }),
+  ];
+}
+
+/**
+ * One run: header and live log. The pane and the large page both render this; `page` says which
+ * (it changes the Back control and drops the Open large button), `compact` comes from the width of
+ * whichever one it is in.
+ */
+function Detail({ ctx, scope, runId, onBack, compact, page }) {
   const runs = useRuns(ctx, scope);
   const run = runs.data ? runs.data.runs.find(r => r.id === runId) : null;
   const { titles } = useChatTitles(ctx, run ? chatIds([run]) : []);
   const events = useEvents(ctx, runId, !!(run && run.has_log));
 
-  const back = jsx(Button, { variant: 'ghost', size: 'sm', onClick: onBack, children: '← Runs' });
+  const topBar = jsxs('div', { style: { ...rowFlex, gap: '0.25rem' }, children: [
+    jsx(Button, { variant: 'ghost', size: 'sm', onClick: onBack, children: page ? '← Back' : '← Runs' }),
+    !page && run && jsx('span', { style: { marginLeft: 'auto' }, children: jsx(Tip, { label: 'Open large', children: jsxs(Button, {
+      variant: 'ghost', size: 'sm', 'aria-label': 'Open large', onClick: () => openLarge(runId),
+      children: [jsx(Codicon, { name: 'screen-full' }), !compact && jsx('span', { style: { marginLeft: '0.375rem' }, children: 'Open large' })],
+    }) }) }),
+  ] });
   if (!run) {
+    let missing;
+    if (runs.isPending) missing = jsx('div', { className: 'p-3', children: jsx(Skeleton, { className: 'h-24 w-full' }) });
+    // The list could not be read at all: say so, rather than that the run is gone.
+    else if (runs.isError && !runs.data) missing = jsx(Problem, { title: 'Agent Runs is not ready', error: runs.error, onRetry: () => runs.refetch() });
     return jsxs('div', { className: 'flex h-full flex-col', children: [
-      jsx('div', { className: 'px-2 py-1.5', style: hairline, children: back }),
-      runs.isPending
-        ? jsx('div', { className: 'p-3', children: jsx(Skeleton, { className: 'h-24 w-full' }) })
-        : jsx(EmptyState, { title: 'This run is no longer listed', description: 'It finished longer ago than the plugin keeps runs, or it is outside the current view.' }),
+      jsx('div', { className: 'px-2 py-1.5', style: hairline, children: topBar }),
+      missing || jsxs('div', { children: [
+          jsx(EmptyState, { title: 'This run is no longer listed', description: page
+            ? 'It finished longer ago than the plugin keeps runs, or the link is out of date.'
+            : 'It finished longer ago than the plugin keeps runs, or it is outside the current view.' }),
+          jsx('div', { style: { display: 'flex', justifyContent: 'center' }, children: jsx(Button, { variant: 'outline', size: 'sm', onClick: onBack,
+            children: page ? 'Go back' : 'Back to runs' }) }),
+        ] }),
     ] });
   }
-  const chat = run.origin.kind === 'hermes_chat' && run.origin.hermes_session_id;
-  const facts = [STATUS_LABEL[run.status] || run.status, runtime(run), run.model, run.agent_label].filter(Boolean);
   let body;
   if (!run.has_log) {
     body = jsx(EmptyState, { title: 'No live log', description: run.log_note || 'This run has no log to show.' });
@@ -492,35 +776,46 @@ function Detail({ ctx, scope, runId, onBack }) {
   } else if (events.data.events.length === 0) {
     body = jsx(EmptyState, { title: 'Nothing in the log yet' });
   } else {
-    body = jsx(EventLog, { events: events.data.events });
+    body = jsx(EventLog, { events: events.data.events, compact });
   }
   return jsxs('div', { className: 'flex h-full min-h-0 flex-col', children: [
-    jsxs('div', { className: 'space-y-1 px-2 py-1.5', style: hairline, children: [
-      back,
-      jsxs('div', { className: 'flex min-w-0 items-center gap-2 px-1', children: [
-        jsx(StatusDot, { tone: TONE[run.status] || 'muted', className: 'shrink-0' }),
-        jsx(Tip, { label: run.cwd || '', children: jsx('span', { className: 'min-w-0 truncate text-sm font-medium', style: strong, children: run.folder || run.cwd || `pid ${run.pid}` }) }),
-      ] }),
-      jsxs('div', { className: 'flex flex-wrap items-center gap-x-2 px-1 text-xs', style: muted, children: [
-        jsx('span', { children: originLabel(run.origin, titles) }),
-        chat && jsx('button', { type: 'button', className: 'underline', style: { color: 'var(--ui-accent)' },
-          onClick: () => openChat(run.origin.hermes_session_id), children: 'Open chat' }),
-        jsx('span', { children: facts.join(' · ') }),
-      ] }),
-      run.args_summary && jsx('div', { className: 'truncate px-1 font-mono text-[0.6875rem]', style: faint, title: run.args_summary, children: run.args_summary }),
+    jsxs('div', { className: 'space-y-1 px-2 py-1.5', style: { ...hairline, minWidth: 0 }, children: [
+      topBar,
+      ...(compact ? [jsx(CompactHeader, { key: 'compact', run, titles })] : wideHeaderLines(run, titles)),
     ] }),
     body,
   ] });
 }
 
+function useSettingsRefresh(ctx) {
+  const qc = useQueryClient();
+  useEffect(() => ctx.onEvent(`plugin.${ID}.settings.changed`, () => qc.invalidateQueries({ queryKey: [ID, 'runs'] })), []);
+}
+
+const rootStyle = { height: '100%', width: '100%', minWidth: 0, overflow: 'hidden' };
+
 function Pane({ ctx }) {
   const [scope, setScope] = useState(null); // null: the default scope from the plugin settings
   const [open, setOpen] = useState(null);
-  const qc = useQueryClient();
-  useEffect(() => ctx.onEvent(`plugin.${ID}.settings.changed`, () => qc.invalidateQueries({ queryKey: [ID, 'runs'] })), []);
-  return jsx('div', { style: { height: '100%', width: '100%' }, children: open
-    ? jsx(Detail, { ctx, scope, runId: open, onBack: () => setOpen(null) })
+  const [ref, compact] = useCompact();
+  useSettingsRefresh(ctx);
+  return jsx('div', { ref, style: rootStyle, children: open
+    ? jsx(Detail, { ctx, scope, runId: open, compact, onBack: () => setOpen(null) })
     : jsx(RunList, { ctx, scope, setScope, onOpen: setOpen }) });
+}
+
+// The large view. It looks runs up in the `all` scope: a link names one run, whichever view of
+// the pane it was opened from.
+function RunPage({ ctx }) {
+  const runId = useRouteRun();
+  const [ref, compact] = useCompact();
+  useSettingsRefresh(ctx);
+  return jsx('div', { ref, style: rootStyle, children: runId
+    ? jsx(Detail, { ctx, scope: 'all', runId, compact, page: true, onBack: leaveLarge })
+    : jsxs('div', { children: [
+      jsx(EmptyState, { title: 'No run to show', description: 'Open a run from the Agent Runs pane and choose Open large.' }),
+      jsx('div', { style: { display: 'flex', justifyContent: 'center' }, children: jsx(Button, { variant: 'outline', size: 'sm', onClick: leaveLarge, children: 'Go back' }) }),
+    ] }) });
 }
 
 function Chip({ ctx }) {
@@ -543,7 +838,9 @@ export default {
   description: 'See the coding-agent runs on this computer and what each one is doing.',
   register(ctx) {
     ctx.registerMany([
-      { id: PANE, area: 'panes', title: 'Agent Runs', data: { placement: 'right' }, render: () => jsx(Pane, { ctx }) },
+      { id: PANE, area: 'panes', title: 'Agent Runs', data: { placement: 'right', dock: PANE_DOCK }, render: () => jsx(Pane, { ctx }) },
+      // The large view of one run. No sidebar nav entry: it is reached from a run's Open large.
+      { id: 'run', area: ROUTES_AREA, title: 'Agent Runs', data: { path: ROUTE_PATH }, render: () => jsx(RunPage, { ctx }) },
       { id: 'chip', area: 'statusBar.right', order: 70, render: () => jsx(Chip, { ctx }) },
       { id: 'show', area: PALETTE_AREA, data: { id: `${ID}.show`, label: 'Show agent runs',
         keywords: ['agent', 'runs', 'claude', 'coding', 'background'], run: openPane } },

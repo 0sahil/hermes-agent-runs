@@ -31,9 +31,13 @@ Then:
    (the pane). The **Agent** switch (the backend that finds the runs) is on after `--enable`.
 2. Restart the gateway once (`hermes gateway restart`) so Hermes loads the backend. Do it between
    chats: a restart ends the turn that is running.
-3. Open **Agent Runs** in the right sidebar, or press ⌘K and run **Show agent runs**.
+3. Open the **Agent Runs** tab next to **Terminal**, or press ⌘K and run **Show agent runs**.
 
 ## What you see
+
+**Where it is.** Agent Runs arrives as a tab next to **Terminal**, so it has a tab you can drag
+anywhere in the layout; it stays where you put it. If the terminal is not in your layout, it joins
+the right sidebar instead.
 
 **The list.** Every run, newest activity first, with:
 
@@ -54,6 +58,14 @@ call (the command it runs, the file it reads or edits, the pattern it searches) 
 each result, plus errors, interruptions and compactions. The log follows new lines while you are at
 the bottom and stops when you scroll up. For a run started from a Hermes chat, **Open chat** takes
 you to that chat.
+
+**In a narrow sidebar** (under about 420 px) the run view is compact: each log entry is one line
+(kind, time, what happened); click it, or press Enter or Space, to open the whole text in place.
+The header shows the folder and status, then where the run came from and how long it has run;
+the model and the command line are under **Details**.
+
+**Open large** (the button at the top of a run) opens that run full size in the main area, with the
+same live log. **Back** returns to where you were.
 
 **The status bar** shows "Agent runs · 2" while runs are live (in the default view); click it to
 open the pane.

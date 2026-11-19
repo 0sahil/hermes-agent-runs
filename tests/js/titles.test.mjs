@@ -1,4 +1,4 @@
-// Chat-title matching in desktop/plugin.js, run with `node --test tests/js/`.
+// Chat-title matching in desktop/plugin.js, run with `node --test tests/js/*.test.mjs`.
 //
 // The plugin is one file that imports the Hermes SDK, which only exists inside the app. The title
 // logic sits in a marked block with no imports, so this test loads that block on its own.

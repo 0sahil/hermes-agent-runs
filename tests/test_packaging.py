@@ -94,6 +94,42 @@ def test_plugin_js_registers_pane_chip_and_command():
     assert "area: PALETTE_AREA" in PLUGIN_JS and "label: 'Show agent runs'" in PLUGIN_JS
 
 
+def registration(area):
+    """The one registerMany entry for `area`, as source text."""
+    found = [line for line in PLUGIN_JS.splitlines() if re.search(rf"\barea:\s*{area}(?![\w$])", line)]
+    assert len(found) == 1, (area, found)
+    return found[0]
+
+
+def test_pane_docks_as_a_tab_beside_the_terminal_without_enforcing_it():
+    # A lone side pane gets no tab strip (the desktop's strip-visibility rules), so the pane stacks
+    # into the terminal's zone on first adoption. Not `enforce`: the user's later drag must stick.
+    pane = registration("'panes'")
+    assert "title: 'Agent Runs'" in pane and "placement: 'right'" in pane and "dock: PANE_DOCK" in pane
+    assert "const PANE_DOCK = { pane: 'terminal', pos: 'center' };" in PLUGIN_JS
+    assert "enforce" not in re.sub(r"//.*", "", PLUGIN_JS)
+    assert "host.revealPane(PANE_ID)" in PLUGIN_JS and "const PANE_ID = `${ID}:${PANE}`" in PLUGIN_JS
+
+
+def test_large_view_is_a_route_with_no_sidebar_nav_entry():
+    import runs_core
+    route = registration("ROUTES_AREA")
+    assert "path: ROUTE_PATH" in route and "jsx(RunPage" in route
+    assert f"const ROUTE_PATH = '/{runs_core.PLUGIN_ID}';" in PLUGIN_JS
+    assert "ROUTES_AREA" in js_imports()
+    assert "SIDEBAR_NAV_AREA" not in PLUGIN_JS and "'sidebar.nav'" not in PLUGIN_JS
+    assert "host.navigate(path)" in PLUGIN_JS  # Open large goes through the app router
+
+
+def test_every_sdk_and_react_name_used_is_imported():
+    code = re.sub(r"//.*|/\*.*?\*/", "", PLUGIN_JS, flags=re.S)
+    defined = set(re.findall(r"\b(?:function|const|let|class)\s+([A-Za-z_$][\w$]*)", code))
+    hooks = set(re.findall(r"\b(use[A-Z]\w*)\s*\(", code))
+    areas = set(re.findall(r"\b([A-Z_]+_AREA)\b", code))
+    missing = (hooks | areas) - js_imports() - defined
+    assert not missing, f"used but never imported or defined: {sorted(missing)}"
+
+
 def test_session_list_params_fit_both_gateway_wires():
     # The session-authority gateway refuses `limit` above 200 (gateway/session_controls.py), which
     # once left every Hermes chat untitled.
@@ -107,9 +143,30 @@ def test_session_list_params_fit_both_gateway_wires():
 
 def test_event_log_lays_out_with_inline_styles_only():
     # The app's Tailwind build does not scan plugins: a class works only if core happens to use it.
-    start, end = PLUGIN_JS.index("function EventLine("), PLUGIN_JS.index("function Detail(")
-    assert "className" not in PLUGIN_JS[start:end]
+    start, end = PLUGIN_JS.index("function Gutter("), PLUGIN_JS.index("const rowFlex")
+    log = PLUGIN_JS[start:end]
+    assert "function EventLine(" in log and "function CompactEventLine(" in log and "function EventLog(" in log
+    assert "className" not in log
     assert "minmax(0, 1fr)" in PLUGIN_JS and "overflowWrap: 'anywhere'" in PLUGIN_JS
+
+
+def test_compact_log_rows_are_keyboard_reachable_toggles():
+    start, end = PLUGIN_JS.index("function CompactEventLine("), PLUGIN_JS.index("const idCache")
+    row = PLUGIN_JS[start:end]
+    for needle in ("role: 'button'", "tabIndex: 0", "'aria-expanded': open", "e.key === 'Enter'", "e.key === ' '",
+                   "...clipStyle", "eventSummary(ev)"):
+        assert needle in row, needle
+    assert re.search(r"const clipStyle = \{[^}]*whiteSpace: 'nowrap'[^}]*textOverflow: 'ellipsis'", PLUGIN_JS)
+
+
+def test_width_is_measured_on_the_view_root_not_the_window():
+    assert "new ResizeObserver(" in PLUGIN_JS
+    assert "innerWidth" not in PLUGIN_JS and "matchMedia" not in PLUGIN_JS
+    # Both the pane and the large page measure their own root element.
+    for component in ("function Pane(", "function RunPage("):
+        body = PLUGIN_JS[PLUGIN_JS.index(component):]
+        body = body[:body.index("\n}\n")]
+        assert "useCompact()" in body and "ref, style: rootStyle" in body, component
 
 
 def test_no_macos_home_paths_in_shipped_files():
